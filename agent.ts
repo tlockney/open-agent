@@ -49,6 +49,8 @@ type Message =
   | { action: "open-url"; url: string }
   | { action: "push"; host: string; remoteHome: string; path: string; dest?: string }
   | { action: "pull"; host: string; remoteHome: string; localPath: string; remoteDest: string }
+  | { action: "op-read"; ref: string }
+  | { action: "op-resolve"; refs: Record<string, string> }
   | { action: "status" };
 
 function parseMessage(raw: unknown): Message {
@@ -109,6 +111,23 @@ function parseMessage(raw: unknown): Message {
     case "pull":
       requireStrings(["host", "remoteHome", "localPath", "remoteDest"]);
       break;
+    case "op-read":
+      requireStrings(["ref"]);
+      if (!/^op:\/\//.test(obj.ref as string)) {
+        throw new Error("ref must be an op:// reference");
+      }
+      break;
+    case "op-resolve": {
+      if (typeof obj.refs !== "object" || obj.refs === null || Array.isArray(obj.refs)) {
+        throw new Error("Missing or invalid 'refs' (expected object)");
+      }
+      const refs = obj.refs as Record<string, unknown>;
+      for (const [key, val] of Object.entries(refs)) {
+        if (typeof val !== "string") throw new Error(`Invalid ref value for '${key}'`);
+        if (!/^op:\/\//.test(val)) throw new Error(`'${key}' is not an op:// reference: ${val}`);
+      }
+      break;
+    }
     case "status":
       break;
     default:
@@ -432,6 +451,52 @@ async function handleMessage(msg: Message): Promise<string> {
       log(`Pull: ${msg.localPath} → ${finalDest}`);
       await Deno.copyFile(msg.localPath, finalDest);
       return JSON.stringify({ ok: true, remotePath: msg.remoteDest.endsWith("/") ? `${msg.remoteDest}${fileName}` : msg.remoteDest });
+    }
+
+    case "op-read": {
+      // Resolve a single op:// reference via the local 1Password CLI
+      log(`op-read: resolving reference`); // deliberately not logging the ref or value
+      const cmd = new Deno.Command("op", { args: ["read", msg.ref] });
+      const result = await cmd.output();
+      if (!result.success) {
+        const err = new TextDecoder().decode(result.stderr).trim();
+        return JSON.stringify({ ok: false, error: `op read failed: ${err}` });
+      }
+      const value = new TextDecoder().decode(result.stdout).trim();
+      return JSON.stringify({ ok: true, value });
+    }
+
+    case "op-resolve": {
+      // Resolve multiple op:// references in parallel
+      log(`op-resolve: resolving ${Object.keys(msg.refs).length} references`);
+      const resolved: Record<string, string> = {};
+      const errors: string[] = [];
+
+      const entries = Object.entries(msg.refs);
+      const results = await Promise.all(
+        entries.map(async ([key, ref]) => {
+          const cmd = new Deno.Command("op", { args: ["read", ref] });
+          const result = await cmd.output();
+          if (!result.success) {
+            const err = new TextDecoder().decode(result.stderr).trim();
+            return { key, error: err };
+          }
+          return { key, value: new TextDecoder().decode(result.stdout).trim() };
+        })
+      );
+
+      for (const r of results) {
+        if ("error" in r) {
+          errors.push(`${r.key}: ${r.error}`);
+        } else {
+          resolved[r.key] = r.value;
+        }
+      }
+
+      if (errors.length > 0) {
+        return JSON.stringify({ ok: false, error: `Failed to resolve: ${errors.join("; ")}` });
+      }
+      return JSON.stringify({ ok: true, resolved });
     }
 
     case "status": {
