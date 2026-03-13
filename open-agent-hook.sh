@@ -21,19 +21,24 @@ _oa_send() {
 }
 
 _oa_json_escape() {
-    printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()), end="")'
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '"%s"' "$s"
 }
 
 # Register this session
 if [[ -S "$_OA_SOCK" ]]; then
+    _OA_HOST_ESC=$(_oa_json_escape "$_OA_HOST")
     _OA_HOME_ESC=$(_oa_json_escape "$HOME")
-    _oa_send "{\"action\":\"connect\",\"host\":\"${_OA_HOST}\",\"remoteHome\":${_OA_HOME_ESC},\"sessionId\":\"${_OA_SID}\"}" >/dev/null 2>&1
+    _OA_SID_ESC=$(_oa_json_escape "$_OA_SID")
+    _oa_send "{\"action\":\"connect\",\"host\":${_OA_HOST_ESC},\"remoteHome\":${_OA_HOME_ESC},\"sessionId\":${_OA_SID_ESC}}" >/dev/null 2>&1
 
     # Unregister on shell exit
     _oa_cleanup() {
-        _oa_send "{\"action\":\"disconnect\",\"host\":\"${_OA_HOST}\",\"sessionId\":\"${_OA_SID}\"}" >/dev/null 2>&1
+        _oa_send "{\"action\":\"disconnect\",\"host\":${_OA_HOST_ESC},\"sessionId\":${_OA_SID_ESC}}" >/dev/null 2>&1
     }
-    trap _oa_cleanup EXIT HUP
+    trap _oa_cleanup EXIT HUP TERM
 
     # Alias open -> ropen if available
     if command -v ropen &>/dev/null; then

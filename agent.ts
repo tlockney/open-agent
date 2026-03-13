@@ -3,7 +3,13 @@
 // open-agent: local daemon that receives open requests from remote machines
 // via a forwarded Unix socket, manages SSHFS mounts, and opens files locally.
 
-const HOME = Deno.env.get("HOME")!;
+const VERSION = "0.1.0";
+
+const HOME = Deno.env.get("HOME");
+if (!HOME) {
+  console.error("HOME environment variable is not set");
+  Deno.exit(1);
+}
 const AGENT_DIR = `${HOME}/.local/share/open-agent`;
 const SOCKET_PATH = `${AGENT_DIR}/open-agent.sock`;
 const MOUNT_BASE = `${HOME}/.remote-mounts`;
@@ -27,7 +33,7 @@ function log(msg: string): void {
   const ts = new Date().toISOString();
   const line = `[${ts}] ${msg}\n`;
   console.log(msg);
-  logFile?.write(new TextEncoder().encode(line));
+  logFile?.writeSync(new TextEncoder().encode(line));
 }
 
 // --- Types ---
@@ -39,6 +45,44 @@ type Message =
   | { action: "disconnect"; host: string; sessionId: string }
   | { action: "status" };
 
+function parseMessage(raw: unknown): Message {
+  if (typeof raw !== "object" || raw === null || !("action" in raw)) {
+    throw new Error("Missing 'action' field");
+  }
+  const obj = raw as Record<string, unknown>;
+  const action = obj.action;
+
+  const requireStrings = (fields: string[]) => {
+    for (const f of fields) {
+      if (typeof obj[f] !== "string") throw new Error(`Missing or invalid '${f}'`);
+    }
+  };
+
+  switch (action) {
+    case "open":
+      requireStrings(["host", "remoteHome", "path"]);
+      if (obj.app !== undefined && typeof obj.app !== "string") {
+        throw new Error("Invalid 'app' field");
+      }
+      break;
+    case "open-vscode":
+      requireStrings(["host", "path"]);
+      break;
+    case "connect":
+      requireStrings(["host", "remoteHome", "sessionId"]);
+      break;
+    case "disconnect":
+      requireStrings(["host", "sessionId"]);
+      break;
+    case "status":
+      break;
+    default:
+      throw new Error(`Unknown action: ${action}`);
+  }
+
+  return raw as Message;
+}
+
 interface MountState {
   host: string;
   remoteHome: string;
@@ -48,6 +92,9 @@ interface MountState {
 }
 
 const mounts = new Map<string, MountState>();
+
+// Serialize mount operations per-host to prevent concurrent sshfs spawns
+const mountLocks = new Map<string, Promise<MountState>>();
 
 // --- Mount management ---
 
@@ -77,7 +124,19 @@ async function isMountResponsive(mountPoint: string): Promise<boolean> {
   }
 }
 
-async function ensureMount(host: string, remoteHome: string): Promise<MountState> {
+function ensureMount(host: string, remoteHome: string): Promise<MountState> {
+  // Serialize per-host so concurrent requests don't spawn parallel sshfs processes
+  const existing = mountLocks.get(host) ?? Promise.resolve(undefined as unknown as MountState);
+  const next = existing.then(() => doMount(host, remoteHome));
+  mountLocks.set(host, next);
+  // Clean up the lock entry when done (success or failure)
+  next.finally(() => {
+    if (mountLocks.get(host) === next) mountLocks.delete(host);
+  });
+  return next;
+}
+
+async function doMount(host: string, remoteHome: string): Promise<MountState> {
   let state = mounts.get(host);
 
   if (state) {
@@ -263,7 +322,7 @@ async function handleMessage(msg: Message): Promise<string> {
           },
         ])
       );
-      return JSON.stringify({ ok: true, mounts: status });
+      return JSON.stringify({ ok: true, version: VERSION, mounts: status });
     }
   }
 }
@@ -279,9 +338,9 @@ async function handleConnection(conn: Deno.Conn): Promise<void> {
     const raw = new TextDecoder().decode(buf.subarray(0, n)).trim();
     let msg: Message;
     try {
-      msg = JSON.parse(raw);
-    } catch {
-      const err = JSON.stringify({ ok: false, error: "Invalid JSON" });
+      msg = parseMessage(JSON.parse(raw));
+    } catch (e) {
+      const err = JSON.stringify({ ok: false, error: `Bad request: ${e instanceof Error ? e.message : e}` });
       await conn.write(new TextEncoder().encode(err + "\n"));
       return;
     }

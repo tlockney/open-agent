@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SOCK="${OPEN_AGENT_SOCK:-/tmp/open-agent.sock}"
-HOST_ALIAS="${OPEN_AGENT_HOST:-work}"
+HOST_ALIAS="${OPEN_AGENT_HOST:-workmbp}"
 
 usage() {
     cat <<'EOF'
@@ -82,20 +82,28 @@ fi
 
 # --- Build JSON message ---
 
+# Produces a JSON-quoted string (with surrounding quotes).
+# Handles backslashes, double quotes, and control characters that could appear in paths.
 json_escape() {
-    printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()), end="")'
+    local s="$1"
+    s="${s//\\/\\\\}"    # \ -> \\
+    s="${s//\"/\\\"}"    # " -> \"
+    s="${s//$'\n'/\\n}"  # newline -> \n
+    s="${s//$'\t'/\\t}"  # tab -> \t
+    printf '"%s"' "$s"
 }
 
 ESCAPED_PATH=$(json_escape "$TARGET")
 ESCAPED_HOME=$(json_escape "$HOME")
+ESCAPED_HOST=$(json_escape "$HOST_ALIAS")
 
 if $VSCODE; then
-    MSG="{\"action\":\"open-vscode\",\"host\":\"${HOST_ALIAS}\",\"path\":${ESCAPED_PATH}}"
+    MSG="{\"action\":\"open-vscode\",\"host\":${ESCAPED_HOST},\"path\":${ESCAPED_PATH}}"
 elif [[ -n "$APP" ]]; then
     ESCAPED_APP=$(json_escape "$APP")
-    MSG="{\"action\":\"open\",\"host\":\"${HOST_ALIAS}\",\"remoteHome\":${ESCAPED_HOME},\"path\":${ESCAPED_PATH},\"app\":${ESCAPED_APP}}"
+    MSG="{\"action\":\"open\",\"host\":${ESCAPED_HOST},\"remoteHome\":${ESCAPED_HOME},\"path\":${ESCAPED_PATH},\"app\":${ESCAPED_APP}}"
 else
-    MSG="{\"action\":\"open\",\"host\":\"${HOST_ALIAS}\",\"remoteHome\":${ESCAPED_HOME},\"path\":${ESCAPED_PATH}}"
+    MSG="{\"action\":\"open\",\"host\":${ESCAPED_HOST},\"remoteHome\":${ESCAPED_HOME},\"path\":${ESCAPED_PATH}}"
 fi
 
 # --- Send to agent ---
@@ -111,25 +119,27 @@ send_message() {
     fi
 }
 
-RESPONSE=$(send_message)
-RC=$?
-
-if [[ $RC -ne 0 ]]; then
+RESPONSE=$(send_message) || {
     echo "ropen: failed to connect to agent socket" >&2
     echo "ropen: the SSH tunnel may have died. Reconnect SSH to restore." >&2
     exit 1
-fi
+}
 
 # --- Handle response ---
 
+# Simple JSON value extractor — avoids python3 dependency for response parsing.
+# Works for our agent's flat, unescaped string values.
+json_value() {
+    echo "$1" | grep -o "\"$2\":\"[^\"]*\"" | head -1 | sed "s/\"$2\":\"//" | sed 's/"$//'
+}
+
 if echo "$RESPONSE" | grep -q '"ok":true'; then
-    # Extract localPath if present for user feedback
-    LOCAL=$(echo "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("localPath",""))' 2>/dev/null || true)
+    LOCAL=$(json_value "$RESPONSE" "localPath")
     if [[ -n "$LOCAL" ]]; then
         echo "Opened: $LOCAL"
     fi
     exit 0
 else
-    ERROR=$(echo "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("error","unknown"))' 2>/dev/null || echo "$RESPONSE")
-    die "$ERROR"
+    ERROR=$(json_value "$RESPONSE" "error")
+    die "${ERROR:-unknown error}"
 fi
