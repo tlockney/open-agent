@@ -6,18 +6,25 @@ A lightweight Deno daemon that runs on your personal Mac, receives open requests
 
 ## How it works
 
-```
-Local Mac (personal)                      Remote Mac (work)
-┌─────────────────────┐                  ┌──────────────────────┐
-│ open-agent daemon    │  SSH RemoteForward  │                      │
-│  • listens on sock   │◄────────────────│ ropen (alias: open)  │
-│  • manages SSHFS     │  Unix socket    │  • sends JSON request │
-│  • calls /usr/bin/open│                 │  • falls back to native│
-│  • calls code --remote│                 │                      │
-└─────────────────────┘                  └──────────────────────┘
-        │
-        ▼
- ~/.remote-mounts/workmbp/  ← SSHFS mount of remote $HOME
+```mermaid
+flowchart LR
+    subgraph remote["Remote Mac (work)"]
+        ropen["ropen\n(alias: open)"]
+        hook["shell hook\nconnect/disconnect"]
+    end
+
+    subgraph local["Local Mac (personal)"]
+        agent["open-agent daemon"]
+        open["/usr/bin/open"]
+        code["code --remote"]
+        mount["~/.remote-mounts/\nSSHFS mount"]
+    end
+
+    ropen -- "JSON over\nSSH-forwarded\nUnix socket" --> agent
+    hook -- "session\nlifecycle" --> agent
+    agent --> open
+    agent --> code
+    agent -- "mounts remote $HOME\non first request" --> mount
 ```
 
 1. SSH session forwards a Unix socket from local to remote
