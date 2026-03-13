@@ -45,6 +45,8 @@ type Message =
   | { action: "disconnect"; host: string; sessionId: string }
   | { action: "copy"; content: string }
   | { action: "paste" }
+  | { action: "notify"; title: string; message?: string; subtitle?: string; sound?: string }
+  | { action: "open-url"; url: string }
   | { action: "status" };
 
 function parseMessage(raw: unknown): Message {
@@ -80,6 +82,21 @@ function parseMessage(raw: unknown): Message {
       requireStrings(["content"]);
       break;
     case "paste":
+      break;
+    case "notify":
+      requireStrings(["title"]);
+      if (obj.message !== undefined && typeof obj.message !== "string") {
+        throw new Error("Invalid 'message' field");
+      }
+      if (obj.subtitle !== undefined && typeof obj.subtitle !== "string") {
+        throw new Error("Invalid 'subtitle' field");
+      }
+      if (obj.sound !== undefined && typeof obj.sound !== "string") {
+        throw new Error("Invalid 'sound' field");
+      }
+      break;
+    case "open-url":
+      requireStrings(["url"]);
       break;
     case "status":
       break;
@@ -260,6 +277,13 @@ function translatePath(remotePath: string, state: MountState): string {
   );
 }
 
+// --- Helpers ---
+
+function osascriptQuote(s: string): string {
+  // AppleScript string literals use backslash-escaped double quotes
+  return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
 // --- Command handlers ---
 
 async function handleMessage(msg: Message): Promise<string> {
@@ -338,6 +362,38 @@ async function handleMessage(msg: Message): Promise<string> {
       }
       const content = new TextDecoder().decode(stdout);
       return JSON.stringify({ ok: true, content });
+    }
+
+    case "notify": {
+      // Build osascript notification command
+      let script = `display notification ${osascriptQuote(msg.message ?? "")}`;
+      script += ` with title ${osascriptQuote(msg.title)}`;
+      if (msg.subtitle) script += ` subtitle ${osascriptQuote(msg.subtitle)}`;
+      if (msg.sound) script += ` sound name ${osascriptQuote(msg.sound)}`;
+
+      const cmd = new Deno.Command("osascript", { args: ["-e", script] });
+      const result = await cmd.output();
+      if (!result.success) {
+        const err = new TextDecoder().decode(result.stderr);
+        return JSON.stringify({ ok: false, error: `notification failed: ${err}` });
+      }
+      log(`Notification: ${msg.title}`);
+      return JSON.stringify({ ok: true });
+    }
+
+    case "open-url": {
+      // Validate it looks like a URL before passing to open
+      if (!/^https?:\/\//i.test(msg.url)) {
+        return JSON.stringify({ ok: false, error: "Only http/https URLs are supported" });
+      }
+      log(`Opening URL: ${msg.url}`);
+      const cmd = new Deno.Command("open", { args: [msg.url] });
+      const result = await cmd.output();
+      if (!result.success) {
+        const err = new TextDecoder().decode(result.stderr);
+        return JSON.stringify({ ok: false, error: `open URL failed: ${err}` });
+      }
+      return JSON.stringify({ ok: true });
     }
 
     case "status": {
