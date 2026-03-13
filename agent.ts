@@ -277,13 +277,6 @@ function translatePath(remotePath: string, state: MountState): string {
   );
 }
 
-// --- Helpers ---
-
-function osascriptQuote(s: string): string {
-  // AppleScript string literals use backslash-escaped double quotes
-  return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-}
-
 // --- Command handlers ---
 
 async function handleMessage(msg: Message): Promise<string> {
@@ -365,13 +358,12 @@ async function handleMessage(msg: Message): Promise<string> {
     }
 
     case "notify": {
-      // Build osascript notification command
-      let script = `display notification ${osascriptQuote(msg.message ?? "")}`;
-      script += ` with title ${osascriptQuote(msg.title)}`;
-      if (msg.subtitle) script += ` subtitle ${osascriptQuote(msg.subtitle)}`;
-      if (msg.sound) script += ` sound name ${osascriptQuote(msg.sound)}`;
+      const args = ["-title", msg.title];
+      if (msg.message) args.push("-message", msg.message);
+      if (msg.subtitle) args.push("-subtitle", msg.subtitle);
+      if (msg.sound) args.push("-sound", msg.sound);
 
-      const cmd = new Deno.Command("osascript", { args: ["-e", script] });
+      const cmd = new Deno.Command("terminal-notifier", { args });
       const result = await cmd.output();
       if (!result.success) {
         const err = new TextDecoder().decode(result.stderr);
