@@ -47,6 +47,8 @@ type Message =
   | { action: "paste" }
   | { action: "notify"; title: string; message?: string; subtitle?: string; sound?: string }
   | { action: "open-url"; url: string }
+  | { action: "push"; host: string; remoteHome: string; path: string; dest?: string }
+  | { action: "pull"; host: string; remoteHome: string; localPath: string; remoteDest: string }
   | { action: "status" };
 
 function parseMessage(raw: unknown): Message {
@@ -97,6 +99,15 @@ function parseMessage(raw: unknown): Message {
       break;
     case "open-url":
       requireStrings(["url"]);
+      break;
+    case "push":
+      requireStrings(["host", "remoteHome", "path"]);
+      if (obj.dest !== undefined && typeof obj.dest !== "string") {
+        throw new Error("Invalid 'dest' field");
+      }
+      break;
+    case "pull":
+      requireStrings(["host", "remoteHome", "localPath", "remoteDest"]);
       break;
     case "status":
       break;
@@ -386,6 +397,41 @@ async function handleMessage(msg: Message): Promise<string> {
         return JSON.stringify({ ok: false, error: `open URL failed: ${err}` });
       }
       return JSON.stringify({ ok: true });
+    }
+
+    case "push": {
+      // Copy a remote file to the local machine
+      const state = await ensureMount(msg.host, msg.remoteHome);
+      const srcPath = translatePath(msg.path, state);
+      const dest = msg.dest ?? `${HOME}/Downloads`;
+      const fileName = srcPath.split("/").pop()!;
+      const destPath = `${dest}/${fileName}`;
+
+      log(`Push: ${srcPath} → ${destPath}`);
+      await Deno.copyFile(srcPath, destPath);
+      return JSON.stringify({ ok: true, localPath: destPath });
+    }
+
+    case "pull": {
+      // Copy a local file to the remote machine via SSHFS
+      const state = await ensureMount(msg.host, msg.remoteHome);
+      const destMountPath = translatePath(msg.remoteDest, state);
+      const fileName = msg.localPath.split("/").pop()!;
+
+      // If remoteDest is a directory, append the filename
+      let finalDest = destMountPath;
+      try {
+        const stat = await Deno.stat(destMountPath);
+        if (stat.isDirectory) {
+          finalDest = `${destMountPath}/${fileName}`;
+        }
+      } catch {
+        // Destination doesn't exist on mount — treat as full file path
+      }
+
+      log(`Pull: ${msg.localPath} → ${finalDest}`);
+      await Deno.copyFile(msg.localPath, finalDest);
+      return JSON.stringify({ ok: true, remotePath: msg.remoteDest.endsWith("/") ? `${msg.remoteDest}${fileName}` : msg.remoteDest });
     }
 
     case "status": {
