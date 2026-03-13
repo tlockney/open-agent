@@ -1,0 +1,16 @@
+# open-agent: SSH config additions
+# Add to ~/.ssh/config on your LOCAL (personal) machine.
+# Adjust "Host work" to match your SSH host alias.
+
+Host work
+    # Forward the agent socket to the remote machine.
+    # Local socket → remote /tmp/open-agent.sock
+    RemoteForward /tmp/open-agent.sock /Users/YOURUSER/.local/share/open-agent/open-agent.sock
+
+    # Clean up stale sockets from prior disconnected sessions.
+    # Without this, reconnecting fails because the old socket file persists.
+    StreamLocalBindUnlink yes
+
+    # Optional: keep connections alive to reduce SSHFS mount disruptions
+    ServerAliveInterval 30
+    ServerAliveCountMax 3

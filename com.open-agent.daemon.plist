@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.open-agent.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Adjust path to deno if yours differs -->
+        <string>/Users/YOURUSER/.deno/bin/deno</string>
+        <string>run</string>
+        <string>--allow-read</string>
+        <string>--allow-write</string>
+        <string>--allow-run</string>
+        <string>--allow-env</string>
+        <string>--allow-net=unix</string>
+        <string>/Users/YOURUSER/.local/share/open-agent/agent.ts</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOURUSER/.local/share/open-agent/launchd-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOURUSER/.local/share/open-agent/launchd-stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/YOURUSER</string>
+    </dict>
+</dict>
+</plist>
