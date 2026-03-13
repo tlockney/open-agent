@@ -43,6 +43,8 @@ type Message =
   | { action: "open-vscode"; host: string; path: string }
   | { action: "connect"; host: string; remoteHome: string; sessionId: string }
   | { action: "disconnect"; host: string; sessionId: string }
+  | { action: "copy"; content: string }
+  | { action: "paste" }
   | { action: "status" };
 
 function parseMessage(raw: unknown): Message {
@@ -73,6 +75,11 @@ function parseMessage(raw: unknown): Message {
       break;
     case "disconnect":
       requireStrings(["host", "sessionId"]);
+      break;
+    case "copy":
+      requireStrings(["content"]);
+      break;
+    case "paste":
       break;
     case "status":
       break;
@@ -307,6 +314,30 @@ async function handleMessage(msg: Message): Promise<string> {
         return JSON.stringify({ ok: false, error: `code failed: ${err}` });
       }
       return JSON.stringify({ ok: true });
+    }
+
+    case "copy": {
+      const cmd = new Deno.Command("pbcopy", { stdin: "piped" });
+      const proc = cmd.spawn();
+      const writer = proc.stdin.getWriter();
+      await writer.write(new TextEncoder().encode(msg.content));
+      await writer.close();
+      const { success } = await proc.output();
+      if (!success) {
+        return JSON.stringify({ ok: false, error: "pbcopy failed" });
+      }
+      log(`Copied ${msg.content.length} bytes to clipboard`);
+      return JSON.stringify({ ok: true, bytes: msg.content.length });
+    }
+
+    case "paste": {
+      const cmd = new Deno.Command("pbpaste");
+      const { success, stdout } = await cmd.output();
+      if (!success) {
+        return JSON.stringify({ ok: false, error: "pbpaste failed" });
+      }
+      const content = new TextDecoder().decode(stdout);
+      return JSON.stringify({ ok: true, content });
     }
 
     case "status": {
