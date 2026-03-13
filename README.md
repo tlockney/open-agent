@@ -67,13 +67,6 @@ open-agent/              ← this repo (agent daemon + install infrastructure)
   ssh_config.example     — SSH config additions
   ropen                  — remote open wrapper (canonical copy; deployed via yadm)
   open-agent-hook.sh     — shell session hook (canonical copy; deployed via yadm)
-  ref/rproj              — rproj with finder/status integration
-
-yadm-dotfiles/           ← separate dotfiles repo (deployed to all machines via yadm)
-  bin/ropen              — deployed to ~/bin/ropen on remote
-  bin/rproj              — includes finder/status subcommands
-  .config/open-agent-hook.sh — sourced from .zshrc on remote
-  .config/zsh/tools.zsh  — sources the hook conditionally
 ```
 
 ## Usage
