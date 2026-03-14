@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Shared utilities for scripts that communicate with the open-agent daemon
-# via a Unix socket (JSON protocol over socat/nc).
+# oa-remote.sh — Shared utilities for remote-side r* scripts
+# Communicates with the open-agent daemon via Unix socket (JSON over socat/nc).
 #
 # Usage:
-#   source "$(dirname "$0")/lib/open-agent.sh"
+#   source "$(dirname "$0")/lib/oa-remote.sh"
 #   oa_init                          # uses $OPEN_AGENT_SOCK or /tmp/open-agent.sock
 #   oa_init "/custom/path.sock"      # explicit socket path
 #   oa_require_sock                  # exit if socket missing

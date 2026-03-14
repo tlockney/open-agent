@@ -72,7 +72,7 @@ cd open-agent
 The install script:
 
 - Checks prerequisites (deno, sshfs, socat, terminal-notifier)
-- Copies `agent.ts` to `~/.local/share/open-agent/`
+- Copies `open-agent-daemon.ts` to `~/.local/share/open-agent/`
 - Copies all scripts to `~/.local/bin/`
 - Installs and starts a launchd service
 - Migrates config from legacy `~/.config/rproj/` if present
@@ -101,8 +101,8 @@ open-agent/
     rproj                Unified project management tool
     rtmux                tmux session wrapper
     lib/
-      open-agent.sh      Shared library (socket communication)
-  agent.ts               Deno daemon
+      oa-remote.sh       Shared library for remote r* scripts
+  open-agent-daemon.ts   Deno daemon
   com.open-agent.daemon.plist   launchd service template
   install.sh             Installer (curl|sh + --local mode)
   open-agent-hook.sh     Shell session hook (deployed to remotes)
@@ -200,7 +200,7 @@ Legacy config at `~/.config/rproj/hosts` is auto-detected with a warning.
 | `OPEN_AGENT_HOST` | `workmbp` | SSH config Host alias for the remote machine |
 | `OPEN_AGENT_SOCK` | `/tmp/open-agent.sock` | Path to the forwarded socket |
 
-**Agent constants (in `agent.ts`):**
+**Agent constants (in `open-agent-daemon.ts`):**
 
 | Constant | Default | Description |
 |----------|---------|-------------|

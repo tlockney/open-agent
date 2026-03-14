@@ -15,7 +15,7 @@
         <string>--allow-run</string>
         <string>--allow-env</string>
         <string>--allow-net=unix</string>
-        <string>/Users/YOURUSER/.local/share/open-agent/agent.ts</string>
+        <string>/Users/YOURUSER/.local/share/open-agent/open-agent-daemon.ts</string>
     </array>
 
     <key>RunAtLoad</key>

@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-source "$(dirname "$0")/lib/open-agent.sh"
+source "$(dirname "$0")/lib/oa-remote.sh"
 
 usage() {
     cat <<'EOF'

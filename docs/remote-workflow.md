@@ -69,7 +69,7 @@ cd open-agent
 The installer will:
 
 - Check prerequisites (deno, sshfs, socat, terminal-notifier)
-- Copy `agent.ts` to `~/.local/share/open-agent/`
+- Copy `open-agent-daemon.ts` to `~/.local/share/open-agent/`
 - Copy all `bin/*` scripts to `~/.local/bin/`
 - Copy `open-agent-hook.sh` to `~/.local/share/open-agent/`
 - Create `~/.remote-mounts/` for SSHFS mount points
@@ -165,7 +165,7 @@ open-agent setup-remote workmbp
 open-agent setup-remote all
 ```
 
-This creates a tarball of the `r*` scripts, `lib/open-agent.sh`, and `open-agent-hook.sh`, then pipes it via SSH to each host. Scripts are installed to `~/.local/bin/` and the hook to `~/.local/share/open-agent/`.
+This creates a tarball of the `r*` scripts, `lib/oa-remote.sh`, and `open-agent-hook.sh`, then pipes it via SSH to each host. Scripts are installed to `~/.local/bin/` and the hook to `~/.local/share/open-agent/`.
 
 Ensure `~/.local/bin` is in `PATH` on each remote:
 
@@ -332,7 +332,7 @@ open-agent version                  # Print version
 
 Reads `~/.config/open-agent/remote-hosts`, extracts unique host aliases, and deploys:
 
-- All `r*` scripts and `lib/open-agent.sh` → `~/.local/bin/` on each remote
+- All `r*` scripts and `lib/oa-remote.sh` → `~/.local/bin/` on each remote
 - `open-agent-hook.sh` → `~/.local/share/open-agent/` on each remote
 
 Validates SSH connectivity before deploying. Prints post-deploy instructions for PATH and hook sourcing.
@@ -479,14 +479,14 @@ When using `-p` with multiple hosts configured, `--host` is required to disambig
 |------|---------|
 | `~/.config/open-agent/remote-hosts` | Host configuration (alias, project dir, label) |
 | `~/.config/open-agent/identity` | Host identity file on remotes |
-| `~/.local/share/open-agent/agent.ts` | The Deno daemon |
+| `~/.local/share/open-agent/open-agent-daemon.ts` | The Deno daemon |
 | `~/.local/share/open-agent/open-agent.sock` | Local daemon socket |
 | `~/.local/share/open-agent/open-agent-hook.sh` | Shell hook (deployed to remotes) |
 | `~/.local/share/open-agent/agent.log` | Agent log output |
 | `~/.local/share/open-agent/launchd-stderr.log` | Launchd stderr |
 | `~/.local/bin/r*` | Remote command scripts |
 | `~/.local/bin/open-agent` | CLI tool |
-| `~/.local/bin/lib/open-agent.sh` | Shared library |
+| `~/.local/bin/lib/oa-remote.sh` | Shared library |
 | `~/.remote-mounts/<host>/` | SSHFS mount points |
 | `~/Library/LaunchAgents/com.open-agent.daemon.plist` | Launchd service |
 
@@ -498,7 +498,7 @@ When using `-p` with multiple hosts configured, `--host` is required to disambig
 | `OPEN_AGENT_SOCK` | `/tmp/open-agent.sock` | Remote | Path to the forwarded socket |
 | `XDG_CONFIG_HOME` | `~/.config` | Both | Base directory for config files |
 
-### Agent Constants (in `agent.ts`)
+### Agent Constants (in `open-agent-daemon.ts`)
 
 | Constant | Default | Description |
 |----------|---------|-------------|

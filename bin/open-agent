@@ -1,254 +1,321 @@
-#!/usr/bin/env bash
-# open-agent — CLI for managing the open-agent remote development toolkit
-#
-# Subcommands:
-#   setup-remote <host|all>   Deploy scripts to remote host(s)
-#   update                    Fetch and install latest release from GitHub
-#   status                    Query the local daemon status
-#   version                   Print version
-#   help                      Show this help
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env
 
-set -euo pipefail
+// open-agent — CLI for managing the open-agent remote development toolkit
+//
+// Subcommands:
+//   setup-remote <host|all>   Deploy r* scripts and hook to remote host(s)
+//   update                    Fetch and install latest release from GitHub
+//   status                    Query the local daemon status
+//   version                   Print version
+//   help                      Show this help
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_OWNER="tlockney"
-REPO_NAME="open-agent"
-VERSION="0.2.0"
+const VERSION = "0.2.0";
+const REPO_OWNER = "tlockney";
+const REPO_NAME = "open-agent";
 
-source "$SCRIPT_DIR/lib/open-agent.sh"
-
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-info()  { echo -e "${GREEN}✓${NC} $1"; }
-warn()  { echo -e "${YELLOW}⚠${NC} $1"; }
-fail()  { echo -e "${RED}✗${NC} $1" >&2; exit 1; }
-step()  { echo -e "${BLUE}→${NC} $1"; }
-
-OA_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/open-agent"
-HOSTS_FILE="$OA_CONFIG_DIR/remote-hosts"
-LEGACY_HOSTS_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/rproj/hosts"
-
-# --- Helpers ---
-
-# Load unique hosts from remote-hosts config (field 1, pipe-delimited)
-load_host_aliases() {
-    local hosts_file="$HOSTS_FILE"
-    if [[ ! -f "$hosts_file" ]]; then
-        if [[ -f "$LEGACY_HOSTS_FILE" ]]; then
-            hosts_file="$LEGACY_HOSTS_FILE"
-            warn "Using legacy hosts file at $hosts_file"
-        else
-            fail "No hosts file found at $HOSTS_FILE\nCreate it with format: host_alias|project_dir|label"
-        fi
-    fi
-
-    local -a seen=()
-    while IFS='|' read -r alias _rest; do
-        [[ -z "$alias" || "$alias" == \#* ]] && continue
-        alias="${alias## }" ; alias="${alias%% }"
-        # Deduplicate
-        local already=false
-        for s in "${seen[@]+"${seen[@]}"}"; do
-            [[ "$s" == "$alias" ]] && { already=true; break; }
-        done
-        $already && continue
-        seen+=("$alias")
-        echo "$alias"
-    done < "$hosts_file"
+const HOME = Deno.env.get("HOME") ?? "";
+if (!HOME) {
+  console.error("HOME environment variable is not set");
+  Deno.exit(1);
 }
 
-# Build a tarball of scripts to deploy to remotes
-build_deploy_tarball() {
-    local tmpfile
-    tmpfile=$(mktemp /tmp/open-agent-deploy.XXXXXX.tar.gz)
+const XDG_CONFIG = Deno.env.get("XDG_CONFIG_HOME") ?? `${HOME}/.config`;
+const OA_CONFIG_DIR = `${XDG_CONFIG}/open-agent`;
+const LEGACY_HOSTS_FILE = `${XDG_CONFIG}/rproj/hosts`;
+const HOSTS_FILE = `${OA_CONFIG_DIR}/remote-hosts`;
+const AGENT_SOCK = `${HOME}/.local/share/open-agent/open-agent.sock`;
 
-    # Determine where open-agent-hook.sh lives relative to bin/
-    local hook_path="$SCRIPT_DIR/../open-agent-hook.sh"
-    if [[ ! -f "$hook_path" ]]; then
-        # Installed layout: hook is in ~/.local/share/open-agent/
-        hook_path="$HOME/.local/share/open-agent/open-agent-hook.sh"
-    fi
-    [[ -f "$hook_path" ]] || fail "Cannot find open-agent-hook.sh"
+// Resolve SCRIPT_DIR — the directory containing this script
+const SCRIPT_DIR = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
 
-    local tmpdir
-    tmpdir=$(mktemp -d)
+// --- Colors ---
 
-    # Copy bin scripts
-    mkdir -p "$tmpdir/bin/lib"
-    for script in ropen rcode rcopy rpaste rnotify rop rpush rpull; do
-        if [[ -f "$SCRIPT_DIR/$script" ]]; then
-            cp "$SCRIPT_DIR/$script" "$tmpdir/bin/"
-        fi
-    done
-    cp "$SCRIPT_DIR/lib/open-agent.sh" "$tmpdir/bin/lib/"
+const color = {
+  red: (s: string) => `\x1b[0;31m${s}\x1b[0m`,
+  green: (s: string) => `\x1b[0;32m${s}\x1b[0m`,
+  yellow: (s: string) => `\x1b[0;33m${s}\x1b[0m`,
+  blue: (s: string) => `\x1b[0;34m${s}\x1b[0m`,
+};
 
-    # Copy hook
-    cp "$hook_path" "$tmpdir/open-agent-hook.sh"
+function info(msg: string): void { console.log(`${color.green("✓")} ${msg}`); }
+function warn(msg: string): void { console.log(`${color.yellow("⚠")} ${msg}`); }
+function step(msg: string): void { console.log(`${color.blue("→")} ${msg}`); }
 
-    tar -czf "$tmpfile" -C "$tmpdir" .
-    rm -rf "$tmpdir"
-    echo "$tmpfile"
+function fail(msg: string): never {
+  console.error(`${color.red("✗")} ${msg}`);
+  Deno.exit(1);
 }
 
-# --- Commands ---
+// --- Utilities ---
 
-cmd_setup_remote() {
-    local target="${1:-}"
-    [[ -z "$target" ]] && fail "Usage: open-agent setup-remote <host|all>"
-
-    local -a hosts=()
-    if [[ "$target" == "all" ]]; then
-        while IFS= read -r h; do
-            hosts+=("$h")
-        done < <(load_host_aliases)
-        [[ ${#hosts[@]} -eq 0 ]] && fail "No hosts found in config"
-        step "Deploying to ${#hosts[@]} host(s): ${hosts[*]}"
-    else
-        hosts=("$target")
-    fi
-
-    # Build tarball once
-    step "Building deploy package..."
-    local tarball
-    tarball=$(build_deploy_tarball)
-
-    local failed=0
-    for host in "${hosts[@]}"; do
-        echo ""
-        step "Deploying to $host..."
-
-        # Validate SSH connectivity
-        if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" "true" 2>/dev/null; then
-            warn "Cannot connect to $host (skipping)"
-            failed=$((failed + 1))
-            continue
-        fi
-
-        # Deploy: extract to ~/.local/bin/ and ~/.local/share/open-agent/
-        ssh "$host" "mkdir -p ~/.local/bin/lib ~/.local/share/open-agent" && \
-        cat "$tarball" | ssh "$host" "
-            set -e
-            cd \$(mktemp -d)
-            tar xzf -
-            cp bin/* ~/.local/bin/
-            cp bin/lib/* ~/.local/bin/lib/
-            cp open-agent-hook.sh ~/.local/share/open-agent/
-            chmod +x ~/.local/bin/r* ~/.local/bin/lib/open-agent.sh
-        " && info "$host: deployed successfully" || {
-            warn "$host: deployment failed"
-            failed=$((failed + 1))
-        }
-    done
-
-    rm -f "$tarball"
-
-    echo ""
-    if [[ $failed -eq 0 ]]; then
-        info "All hosts deployed successfully"
-    else
-        warn "$failed host(s) failed"
-    fi
-
-    echo ""
-    echo "Post-deploy steps on each remote host:"
-    echo "  1. Ensure ~/.local/bin is in PATH:"
-    echo "     export PATH=\"\$HOME/.local/bin:\$PATH\""
-    echo ""
-    echo "  2. Source the hook in ~/.zshrc (or ~/.bashrc):"
-    echo "     source ~/.local/share/open-agent/open-agent-hook.sh"
-    echo ""
-    echo "  3. Reconnect SSH to activate the forwarded socket."
+function fileExists(path: string): boolean {
+  try { Deno.statSync(path); return true; } catch { return false; }
 }
 
-cmd_update() {
-    step "Checking for latest release..."
-
-    local latest_tag
-    latest_tag=$(curl -fsSL "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest" \
-        | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')
-
-    if [[ -z "$latest_tag" ]]; then
-        fail "Could not fetch latest release from GitHub"
-    fi
-
-    step "Latest release: $latest_tag"
-
-    local tmpdir
-    tmpdir=$(mktemp -d)
-    local tarball_url="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$latest_tag/${REPO_NAME}-${latest_tag}.tar.gz"
-
-    step "Downloading $tarball_url..."
-    if ! curl -fsSL "$tarball_url" -o "$tmpdir/release.tar.gz"; then
-        rm -rf "$tmpdir"
-        fail "Failed to download release tarball"
-    fi
-
-    step "Extracting..."
-    tar xzf "$tmpdir/release.tar.gz" -C "$tmpdir"
-
-    # Find the extracted directory (should be open-agent-vX.Y.Z/)
-    local extracted
-    extracted=$(find "$tmpdir" -maxdepth 1 -type d -name "${REPO_NAME}-*" | head -1)
-    if [[ -z "$extracted" ]]; then
-        # Might have extracted without prefix
-        extracted="$tmpdir"
-    fi
-
-    step "Installing..."
-    if [[ -f "$extracted/install.sh" ]]; then
-        bash "$extracted/install.sh" --local
-    else
-        fail "install.sh not found in release tarball"
-    fi
-
-    rm -rf "$tmpdir"
-    info "Update complete"
+async function run(
+  cmd: string,
+  args: string[],
+  opts?: { stdin?: "inherit" | "null" | "piped"; input?: Uint8Array; timeout?: number },
+): Promise<{ success: boolean; stdout: string; stderr: string; code: number }> {
+  const command = new Deno.Command(cmd, {
+    args,
+    stdin: opts?.stdin ?? "null",
+    stdout: "piped",
+    stderr: "piped",
+    signal: opts?.timeout ? AbortSignal.timeout(opts.timeout) : undefined,
+  });
+  try {
+    let child: Deno.CommandOutput;
+    if (opts?.input) {
+      const proc = command.spawn();
+      const writer = proc.stdin.getWriter();
+      await writer.write(opts.input);
+      await writer.close();
+      child = await proc.output();
+    } else {
+      child = await command.output();
+    }
+    return {
+      success: child.success,
+      stdout: new TextDecoder().decode(child.stdout).trim(),
+      stderr: new TextDecoder().decode(child.stderr).trim(),
+      code: child.code,
+    };
+  } catch {
+    return { success: false, stdout: "", stderr: "command failed", code: 1 };
+  }
 }
 
-cmd_status() {
-    oa_init "${HOME}/.local/share/open-agent/open-agent.sock"
+async function agentSend(message: string): Promise<Record<string, unknown>> {
+  let conn: Deno.UnixConn;
+  try {
+    conn = await Deno.connect({ transport: "unix", path: AGENT_SOCK });
+  } catch {
+    throw new Error(
+      `Agent socket not found at ${AGENT_SOCK}\n  Is open-agent running? Check: launchctl list | grep open-agent`,
+    );
+  }
+  try {
+    await conn.write(new TextEncoder().encode(message + "\n"));
+    const buf = new Uint8Array(65536);
+    const n = await conn.read(buf);
+    if (!n) throw new Error("No response from agent");
+    return JSON.parse(new TextDecoder().decode(buf.subarray(0, n)).trim()) as Record<string, unknown>;
+  } finally {
+    conn.close();
+  }
+}
 
-    if [[ ! -S "$OA_SOCK" ]]; then
-        echo -e "${RED}Agent is not running${NC} (no socket at $OA_SOCK)"
-        echo ""
-        echo "Start it with: launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.open-agent.daemon.plist"
-        exit 1
-    fi
+// --- Config ---
 
-    local response
-    response=$(oa_send '{"action":"status"}') || {
-        fail "Failed to connect to agent socket"
+function loadHostAliases(): string[] {
+  let hostsPath = HOSTS_FILE;
+  if (!fileExists(hostsPath)) {
+    if (fileExists(LEGACY_HOSTS_FILE)) {
+      hostsPath = LEGACY_HOSTS_FILE;
+      warn(`Using legacy hosts file at ${hostsPath}`);
+    } else {
+      fail(`No hosts file found at ${HOSTS_FILE}\nCreate it with format: host_alias|project_dir|label`);
+    }
+  }
+
+  const text = Deno.readTextFileSync(hostsPath);
+  const seen = new Set<string>();
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const alias = trimmed.split("|")[0].trim();
+    if (alias && !seen.has(alias)) seen.add(alias);
+  }
+  return [...seen];
+}
+
+// --- Commands ---
+
+async function cmdSetupRemote(target: string): Promise<void> {
+  if (!target) fail("Usage: open-agent setup-remote <host|all>");
+
+  let hosts: string[];
+  if (target === "all") {
+    hosts = loadHostAliases();
+    if (hosts.length === 0) fail("No hosts found in config");
+    step(`Deploying to ${hosts.length} host(s): ${hosts.join(", ")}`);
+  } else {
+    hosts = [target];
+  }
+
+  // Find open-agent-hook.sh
+  let hookPath = `${SCRIPT_DIR}/../open-agent-hook.sh`;
+  if (!fileExists(hookPath)) {
+    hookPath = `${HOME}/.local/share/open-agent/open-agent-hook.sh`;
+  }
+  if (!fileExists(hookPath)) fail("Cannot find open-agent-hook.sh");
+
+  // Build tarball
+  step("Building deploy package...");
+  const tmpDir = Deno.makeTempDirSync();
+
+  // Create directory structure
+  await Deno.mkdir(`${tmpDir}/bin/lib`, { recursive: true });
+
+  // Copy remote scripts
+  const remoteScripts = ["ropen", "rcode", "rcopy", "rpaste", "rnotify", "rop", "rpush", "rpull"];
+  for (const script of remoteScripts) {
+    const src = `${SCRIPT_DIR}/${script}`;
+    if (fileExists(src)) {
+      await Deno.copyFile(src, `${tmpDir}/bin/${script}`);
+    }
+  }
+  await Deno.copyFile(`${SCRIPT_DIR}/lib/oa-remote.sh`, `${tmpDir}/bin/lib/oa-remote.sh`);
+  await Deno.copyFile(hookPath, `${tmpDir}/open-agent-hook.sh`);
+
+  // Create tarball
+  const tarball = `${tmpDir}/deploy.tar.gz`;
+  const tarResult = await run("tar", ["-czf", tarball, "-C", tmpDir, "bin", "open-agent-hook.sh"]);
+  if (!tarResult.success) fail("Failed to create deploy tarball");
+
+  let failed = 0;
+  for (const host of hosts) {
+    console.log();
+    step(`Deploying to ${host}...`);
+
+    // Validate SSH connectivity
+    const sshCheck = await run("ssh", [
+      "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, "true",
+    ], { timeout: 8000 });
+    if (!sshCheck.success) {
+      warn(`Cannot connect to ${host} (skipping)`);
+      failed++;
+      continue;
     }
 
-    echo "$response" | python3 -c '
-import json, sys
-d = json.load(sys.stdin)
-print(f"Agent: running")
-sessions = d.get("sessions", {})
-mounts = d.get("mounts", {})
-print(f"Sessions: {len(sessions)} active")
-for host, sids in sessions.items():
-    count = len(sids) if isinstance(sids, list) else sids
-    print(f"  {host}: {count} session(s)")
-print(f"Mounts: {len(mounts)} active")
-for host, info in mounts.items():
-    mount_path = info if isinstance(info, str) else info.get("path", "unknown")
-    print(f"  {host}: {mount_path}")
-' 2>/dev/null || echo "$response"
+    // Create remote directories
+    await run("ssh", [host, "mkdir -p ~/.local/bin/lib ~/.local/share/open-agent"]);
+
+    // Deploy tarball
+    const tarballBytes = await Deno.readFile(tarball);
+    const deployResult = await run("ssh", [
+      host,
+      "set -e; cd $(mktemp -d); tar xzf -; " +
+      "cp bin/* ~/.local/bin/; cp bin/lib/* ~/.local/bin/lib/; " +
+      "cp open-agent-hook.sh ~/.local/share/open-agent/; " +
+      "chmod +x ~/.local/bin/r* ~/.local/bin/lib/oa-remote.sh",
+    ], { stdin: "piped", input: tarballBytes });
+
+    if (deployResult.success) {
+      info(`${host}: deployed successfully`);
+    } else {
+      warn(`${host}: deployment failed`);
+      failed++;
+    }
+  }
+
+  // Cleanup
+  try { await Deno.remove(tmpDir, { recursive: true }); } catch { /* ignore */ }
+
+  console.log();
+  if (failed === 0) {
+    info("All hosts deployed successfully");
+  } else {
+    warn(`${failed} host(s) failed`);
+  }
+
+  console.log(`
+Post-deploy steps on each remote host:
+  1. Ensure ~/.local/bin is in PATH:
+     export PATH="$HOME/.local/bin:$PATH"
+
+  2. Source the hook in ~/.zshrc (or ~/.bashrc):
+     source ~/.local/share/open-agent/open-agent-hook.sh
+
+  3. Reconnect SSH to activate the forwarded socket.`);
 }
 
-cmd_version() {
-    echo "open-agent $VERSION"
+async function cmdUpdate(): Promise<void> {
+  step("Checking for latest release...");
+
+  const apiResult = await run("curl", [
+    "-fsSL", `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`,
+  ]);
+  if (!apiResult.success) fail("Could not fetch latest release from GitHub");
+
+  const tagMatch = apiResult.stdout.match(/"tag_name"\s*:\s*"([^"]+)"/);
+  if (!tagMatch) fail("Could not parse release tag from GitHub API response");
+  const latestTag = tagMatch[1];
+
+  step(`Latest release: ${latestTag}`);
+
+  const tmpDir = Deno.makeTempDirSync();
+  const tarballUrl =
+    `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${latestTag}/${REPO_NAME}-${latestTag}.tar.gz`;
+
+  step(`Downloading ${tarballUrl}...`);
+  const dlResult = await run("curl", ["-fsSL", tarballUrl, "-o", `${tmpDir}/release.tar.gz`]);
+  if (!dlResult.success) {
+    try { await Deno.remove(tmpDir, { recursive: true }); } catch { /* ignore */ }
+    fail("Failed to download release tarball");
+  }
+
+  step("Extracting...");
+  await run("tar", ["xzf", `${tmpDir}/release.tar.gz`, "-C", tmpDir]);
+
+  // Find extracted directory
+  let extracted = "";
+  for await (const entry of Deno.readDir(tmpDir)) {
+    if (entry.isDirectory && entry.name.startsWith(`${REPO_NAME}-`)) {
+      extracted = `${tmpDir}/${entry.name}`;
+      break;
+    }
+  }
+  if (!extracted) extracted = tmpDir;
+
+  step("Installing...");
+  const installScript = `${extracted}/install.sh`;
+  if (!fileExists(installScript)) {
+    try { await Deno.remove(tmpDir, { recursive: true }); } catch { /* ignore */ }
+    fail("install.sh not found in release tarball");
+  }
+
+  const installResult = await run("bash", [installScript, "--local"]);
+  if (!installResult.success) {
+    console.error(installResult.stderr);
+    fail("Install failed");
+  }
+  if (installResult.stdout) console.log(installResult.stdout);
+
+  try { await Deno.remove(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  info("Update complete");
 }
 
-show_help() {
-    cat <<EOF
-Usage: open-agent <command> [args]
+async function cmdStatus(): Promise<void> {
+  const response = await agentSend('{"action":"status"}');
+
+  console.log("Agent: running");
+
+  const sessions = (response.sessions ?? {}) as Record<string, unknown>;
+  const mounts = (response.mounts ?? {}) as Record<string, unknown>;
+
+  console.log(`Sessions: ${Object.keys(sessions).length} active`);
+  for (const [host, sids] of Object.entries(sessions)) {
+    const count = Array.isArray(sids) ? sids.length : sids;
+    console.log(`  ${host}: ${count} session(s)`);
+  }
+
+  console.log(`Mounts: ${Object.keys(mounts).length} active`);
+  for (const [host, mInfo] of Object.entries(mounts)) {
+    const mountPath = typeof mInfo === "string"
+      ? mInfo
+      : (mInfo as Record<string, unknown>)?.path ?? "unknown";
+    console.log(`  ${host}: ${mountPath}`);
+  }
+}
+
+function cmdVersion(): void {
+  console.log(`open-agent ${VERSION}`);
+}
+
+function showHelp(): void {
+  console.log(`Usage: open-agent <command> [args]
 
 Commands:
     setup-remote <host|all>   Deploy r* scripts and hook to remote host(s)
@@ -258,30 +325,51 @@ Commands:
     help                      Show this help
 
 Config:
-    Hosts file: $HOSTS_FILE
+    Hosts file: ${HOSTS_FILE}
     Format: host_alias|project_dir|label (one per line)
 
 Examples:
     open-agent setup-remote workmbp     # Deploy to a single host
     open-agent setup-remote all         # Deploy to all configured hosts
     open-agent status                   # Check daemon status
-    open-agent update                   # Update to latest release
-EOF
-    exit 0
+    open-agent update                   # Update to latest release`);
 }
 
-# --- Main ---
+// --- Main ---
 
-[[ $# -eq 0 ]] && show_help
+async function main(): Promise<void> {
+  const [command, ...rest] = Deno.args;
 
-command="$1"
-shift
+  if (!command) {
+    showHelp();
+    Deno.exit(0);
+  }
 
-case "$command" in
-    setup-remote) cmd_setup_remote "$@" ;;
-    update)       cmd_update "$@" ;;
-    status)       cmd_status "$@" ;;
-    version)      cmd_version ;;
-    help|--help|-h) show_help ;;
-    *) fail "Unknown command: $command. See 'open-agent help'" ;;
-esac
+  switch (command) {
+    case "setup-remote":
+      await cmdSetupRemote(rest[0] ?? "");
+      break;
+    case "update":
+      await cmdUpdate();
+      break;
+    case "status":
+      await cmdStatus();
+      break;
+    case "version":
+      cmdVersion();
+      break;
+    case "help":
+    case "--help":
+    case "-h":
+      showHelp();
+      break;
+    default:
+      fail(`Unknown command: ${command}. See 'open-agent help'`);
+  }
+}
+
+main().catch((err: unknown) => {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error(color.red(`✗ ${msg}`));
+  Deno.exit(1);
+});

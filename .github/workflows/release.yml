@@ -20,7 +20,7 @@ jobs:
           PREFIX="open-agent-${VERSION}"
           tar czf "${PREFIX}.tar.gz" \
             --transform "s,^,${PREFIX}/," \
-            agent.ts \
+            open-agent-daemon.ts \
             com.open-agent.daemon.plist \
             install.sh \
             open-agent-hook.sh \

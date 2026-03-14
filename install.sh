@@ -112,8 +112,8 @@ mkdir -p "$AGENT_DIR" "$BIN_DIR/lib" "$HOME/.remote-mounts"
 
 # --- Copy agent ---
 
-cp "$SCRIPT_DIR/agent.ts" "$AGENT_DIR/agent.ts"
-info "agent.ts → $AGENT_DIR/"
+cp "$SCRIPT_DIR/open-agent-daemon.ts" "$AGENT_DIR/open-agent-daemon.ts"
+info "open-agent-daemon.ts → $AGENT_DIR/"
 
 # --- Copy bin scripts ---
 
@@ -126,8 +126,8 @@ info "bin scripts → $BIN_DIR/"
 
 # --- Copy lib ---
 
-cp "$SCRIPT_DIR/bin/lib/open-agent.sh" "$BIN_DIR/lib/open-agent.sh"
-info "lib/open-agent.sh → $BIN_DIR/lib/"
+cp "$SCRIPT_DIR/bin/lib/oa-remote.sh" "$BIN_DIR/lib/oa-remote.sh"
+info "lib/oa-remote.sh → $BIN_DIR/lib/"
 
 # --- Copy hook ---
 
