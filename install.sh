@@ -154,11 +154,23 @@ info "Installed launchd plist to $LAUNCH_AGENTS/${PLIST_NAME}.plist"
 
 # Unload if already running, then load
 launchctl bootout "gui/$(id -u)/$PLIST_NAME" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENTS/${PLIST_NAME}.plist"
+sleep 1  # let launchd finish cleanup before re-bootstrapping
+
+if ! launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENTS/${PLIST_NAME}.plist" 2>/dev/null; then
+    # Retry once — bootout/bootstrap race can cause transient "Input/output error"
+    warn "First bootstrap attempt failed, retrying..."
+    sleep 2
+    launchctl bootout "gui/$(id -u)/$PLIST_NAME" 2>/dev/null || true
+    sleep 1
+    if ! launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENTS/${PLIST_NAME}.plist"; then
+        fail "Could not start agent via launchd. Try manually:
+    launchctl bootstrap gui/$(id -u) $LAUNCH_AGENTS/${PLIST_NAME}.plist"
+    fi
+fi
 info "Agent started via launchd"
 
 # Verify it's running
-sleep 1
+sleep 2
 if [[ -S "$AGENT_DIR/open-agent.sock" ]]; then
     info "Agent socket is live at $AGENT_DIR/open-agent.sock"
 else
