@@ -80,7 +80,7 @@ build_deploy_tarball() {
 
     # Copy bin scripts
     mkdir -p "$tmpdir/bin/lib"
-    for script in ropen rcode rcopy rpaste rnotify rop rpush rpull rproj rtmux; do
+    for script in ropen rcode rcopy rpaste rnotify rop rpush rpull; do
         if [[ -f "$SCRIPT_DIR/$script" ]]; then
             cp "$SCRIPT_DIR/$script" "$tmpdir/bin/"
         fi

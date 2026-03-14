@@ -1,408 +1,744 @@
-#!/usr/bin/env bash
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env
 
-set -euo pipefail
+// rproj — Unified Remote Project Tool
+//
+// Browse and open projects across multiple remote SSH hosts.
+// Supports interactive selection via fzf and direct commands.
+//
+// Subcommands:
+//   list (l)   — List remote projects (text or Alfred JSON)
+//   tmux (t)   — Open tmux session for a project
+//   code (c)   — Open VS Code for a project
+//   finder (f) — Open project in Finder via SSHFS
+//   status (s) — Show open-agent daemon status
+//   setup      — Print recommended SSH config
+//   open (o)   — Open from Alfred (host|path format)
+//   help       — Show this help
 
-# rproj - Unified Remote Project Tool
-#
-# Subcommands:
-#   list     List remote projects (optionally as JSON for Alfred)
-#   tmux     Open tmux session for a remote project
-#   code     Open VS Code for a remote project
-#   finder   Open project in local Finder via SSHFS (requires open-agent)
-#   status   Show open-agent daemon status
-#   setup    Print recommended SSH config for configured hosts
-#   help     Show this help
-#
-# Run with no arguments for interactive mode.
+// --- Constants ---
 
-SCRIPT_NAME="$(basename "$0")"
-SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-
-source "$(dirname "${BASH_SOURCE[0]}")/lib/open-agent.sh"
-
-# Config file locations — check open-agent canonical path first, fall back to legacy
-OA_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/open-agent"
-LEGACY_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/rproj"
-
-if [[ -f "$OA_CONFIG_DIR/remote-hosts" ]]; then
-    HOSTS_FILE="$OA_CONFIG_DIR/remote-hosts"
-elif [[ -f "$LEGACY_CONFIG_DIR/hosts" ]]; then
-    HOSTS_FILE="$LEGACY_CONFIG_DIR/hosts"
-    echo "rproj: using legacy config at $HOSTS_FILE — move to $OA_CONFIG_DIR/remote-hosts" >&2
-else
-    HOSTS_FILE="$OA_CONFIG_DIR/remote-hosts"
-fi
-CONFIG_FILE="$LEGACY_CONFIG_DIR/config"
-
-# Initialize open-agent with the local daemon socket path
-oa_init "${HOME}/.local/share/open-agent/open-agent.sock"
-
-# Colors (disabled in JSON mode)
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[0;33m'
-NC='\033[0m'
-
-# State
-JSON_MODE=false
-QUERY=""
-PROJECT_PATH=""
-SELECTED_HOST=""
-HOST_FILTER=""
-
-# Multi-host config: parallel arrays populated by load_hosts
-HOST_ALIASES=()
-HOST_DIRS=()
-HOST_LABELS=()
-
-# Logging (respects JSON mode)
-info() {
-    [[ "$JSON_MODE" == "true" ]] && return
-    echo -e "${BLUE}$*${NC}"
+const HOME = Deno.env.get("HOME") ?? "";
+if (!HOME) {
+  console.error("HOME environment variable is not set");
+  Deno.exit(1);
 }
 
-success() {
-    [[ "$JSON_MODE" == "true" ]] && return
-    echo -e "${GREEN}$*${NC}"
+const XDG_CONFIG = Deno.env.get("XDG_CONFIG_HOME") ?? `${HOME}/.config`;
+const OA_CONFIG_DIR = `${XDG_CONFIG}/open-agent`;
+const LEGACY_CONFIG_DIR = `${XDG_CONFIG}/rproj`;
+const AGENT_SOCK = `${HOME}/.local/share/open-agent/open-agent.sock`;
+const SCRIPT_NAME = "rproj";
+const SSH_TIMEOUT_MS = 5_000;
+
+// --- Colors ---
+
+const color = {
+  red: (s: string) => `\x1b[0;31m${s}\x1b[0m`,
+  green: (s: string) => `\x1b[0;32m${s}\x1b[0m`,
+  blue: (s: string) => `\x1b[0;34m${s}\x1b[0m`,
+  yellow: (s: string) => `\x1b[0;33m${s}\x1b[0m`,
+};
+
+// --- Types ---
+
+interface HostEntry {
+  alias: string;
+  dir: string;
+  label: string;
 }
 
-warn() {
-    [[ "$JSON_MODE" == "true" ]] && return
-    echo -e "${YELLOW}$*${NC}" >&2
+interface ProjectEntry {
+  host: string;
+  baseDir: string;
+  projectPath: string;
+  label: string;
 }
 
-error() {
-    if [[ "$JSON_MODE" == "true" ]]; then
-        cat << EOF
-{"items": [{
-    "title": "Error",
-    "subtitle": "$*",
-    "valid": false,
-    "icon": {"path": "error.png"}
-}]}
-EOF
-        exit 0
-    else
-        echo -e "${RED}Error: $*${NC}" >&2
-        exit 1
-    fi
+interface ProjectMatch {
+  host: string;
+  path: string;
 }
 
-# Parent directory display label
-parent_label() {
-    echo "📂 $(basename "$1")"
+interface Opts {
+  hostFilter: string | null;
+  projectName: string | null;
 }
 
-# Strip tree-drawing prefix from fzf selection
-strip_tree_prefix() {
-    local s="$1"
-    s="${s#  ├── }"
-    s="${s#  └── }"
-    echo "$s"
+type Command =
+  | { cmd: "list"; opts: Opts; json: boolean; query: string }
+  | { cmd: "tmux"; opts: Opts }
+  | { cmd: "code"; opts: Opts }
+  | { cmd: "finder"; opts: Opts }
+  | { cmd: "default"; opts: Opts }
+  | { cmd: "status" }
+  | { cmd: "help" }
+  | { cmd: "setup"; opts: Opts }
+  | { cmd: "open"; arg: string }
+  | { cmd: "preview"; host: string; dir: string; item: string }
+  | { cmd: "preview_multi"; meta: string };
+
+// --- Logging (suppressed in JSON mode) ---
+
+let jsonMode = false;
+
+function info(msg: string): void {
+  if (!jsonMode) console.error(color.blue(msg));
+}
+function success(msg: string): void {
+  if (!jsonMode) console.error(color.green(msg));
+}
+function warn(msg: string): void {
+  if (!jsonMode) console.error(color.yellow(msg));
 }
 
-# Load multi-host configuration from hosts file or legacy config
-load_hosts() {
-    if [[ -f "$HOSTS_FILE" ]]; then
-        while IFS='|' read -r alias dir label; do
-            # Skip empty lines and comments
-            [[ -z "$alias" || "$alias" == \#* ]] && continue
-            # Trim whitespace
-            alias="${alias## }" ; alias="${alias%% }"
-            dir="${dir## }" ; dir="${dir%% }"
-            label="${label## }" ; label="${label%% }"
-
-            HOST_ALIASES+=("$alias")
-            HOST_DIRS+=("$dir")
-            HOST_LABELS+=("${label:-$alias}")
-        done < "$HOSTS_FILE"
-    elif [[ -f "$CONFIG_FILE" ]]; then
-        # Legacy single-host fallback
-        local RPROJ_HOST="workmbp"
-        local RPROJ_DIR="/Users/thomas.lockney/src/metron"
-        # shellcheck source=/dev/null
-        source "$CONFIG_FILE"
-        HOST_ALIASES+=("$RPROJ_HOST")
-        HOST_DIRS+=("$RPROJ_DIR")
-        HOST_LABELS+=("$RPROJ_HOST")
-    else
-        error "No hosts file found. Create $OA_CONFIG_DIR/remote-hosts with format: host|dir|label"
-    fi
-
-    if [[ ${#HOST_ALIASES[@]} -eq 0 ]]; then
-        error "No hosts configured"
-    fi
-
-    # Apply --host filter if set
-    if [[ -n "$HOST_FILTER" ]]; then
-        local filtered_aliases=() filtered_dirs=() filtered_labels=()
-        for i in "${!HOST_ALIASES[@]}"; do
-            if [[ "${HOST_ALIASES[$i]}" == "$HOST_FILTER" ]]; then
-                filtered_aliases+=("${HOST_ALIASES[$i]}")
-                filtered_dirs+=("${HOST_DIRS[$i]}")
-                filtered_labels+=("${HOST_LABELS[$i]}")
-            fi
-        done
-        if [[ ${#filtered_aliases[@]} -eq 0 ]]; then
-            error "No entries found for host: $HOST_FILTER"
-        fi
-        HOST_ALIASES=("${filtered_aliases[@]}")
-        HOST_DIRS=("${filtered_dirs[@]}")
-        HOST_LABELS=("${filtered_labels[@]}")
-    fi
+function error(msg: string): never {
+  if (jsonMode) {
+    console.log(JSON.stringify({
+      items: [{ title: "Error", subtitle: msg, valid: false, icon: { path: "error.png" } }],
+    }));
+    Deno.exit(0);
+  }
+  console.error(color.red(`Error: ${msg}`));
+  Deno.exit(1);
 }
 
-# Discover projects across all configured hosts in parallel
-# Output: lines of "host|base_dir|project_path|label"
-discover_all_projects() {
-    local tmpdir
-    tmpdir=$(mktemp -d)
+// --- Utilities ---
 
-    # Launch SSH discovery in parallel for each host entry
-    for i in "${!HOST_ALIASES[@]}"; do
-        local host="${HOST_ALIASES[$i]}"
-        local dir="${HOST_DIRS[$i]}"
-        (
-            ssh -o BatchMode=yes -o ConnectTimeout=3 "$host" \
-                "find '$dir' -maxdepth 1 -mindepth 1 -type d -not -name '.*' | sort" \
-                2>/dev/null > "$tmpdir/${i}" || true
-        ) &
-    done
-    wait
-
-    # Merge results
-    for i in "${!HOST_ALIASES[@]}"; do
-        local host="${HOST_ALIASES[$i]}"
-        local dir="${HOST_DIRS[$i]}"
-        local label="${HOST_LABELS[$i]}"
-
-        # Parent directory entry
-        echo "${host}|${dir}|${dir}|${label}"
-
-        if [[ -s "$tmpdir/${i}" ]]; then
-            while IFS= read -r line; do
-                echo "${host}|${dir}|${line}|${label}"
-            done < "$tmpdir/${i}"
-        fi
-    done
-
-    rm -rf "$tmpdir"
+interface RunResult {
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  code: number;
 }
 
-# Build fzf display lines from discovery results
-# Each line: "host|path\tLabel > display_text"
-# fzf shows only the part after \t; selection includes hidden prefix
-build_fzf_entries() {
-    local entries="$1"
-    local current_label="" child_count=0 child_idx=0
-    local -a group_lines=() group_metas=()
-
-    # Process entries group by group (grouped by label)
-    while IFS='|' read -r host base_dir project_path label; do
-        [[ -z "$host" ]] && continue
-
-        if [[ "$label" != "$current_label" ]]; then
-            # Flush previous group
-            if [[ ${#group_lines[@]} -gt 0 ]]; then
-                _flush_group "$current_label"
-            fi
-            current_label="$label"
-            group_lines=()
-            group_metas=()
-        fi
-
-        group_metas+=("${host}|${project_path}")
-        if [[ "$project_path" == "$base_dir" ]]; then
-            group_lines+=("__PARENT__|$(basename "$base_dir")")
-        else
-            group_lines+=("__CHILD__|$(basename "$project_path")")
-        fi
-    done <<< "$entries"
-
-    # Flush last group
-    if [[ ${#group_lines[@]} -gt 0 ]]; then
-        _flush_group "$current_label"
-    fi
+async function run(
+  cmd: string,
+  args: string[],
+  opts?: { timeout?: number; stdin?: "inherit" | "null" | "piped"; input?: Uint8Array },
+): Promise<RunResult> {
+  const command = new Deno.Command(cmd, {
+    args,
+    stdin: opts?.stdin ?? "null",
+    stdout: "piped",
+    stderr: "piped",
+    signal: opts?.timeout ? AbortSignal.timeout(opts.timeout) : undefined,
+  });
+  let child: Deno.CommandOutput;
+  try {
+    if (opts?.input) {
+      const proc = command.spawn();
+      const writer = proc.stdin.getWriter();
+      await writer.write(opts.input);
+      await writer.close();
+      child = await proc.output();
+    } else {
+      child = await command.output();
+    }
+  } catch {
+    return { success: false, stdout: "", stderr: "command timed out or failed", code: 1 };
+  }
+  return {
+    success: child.success,
+    stdout: new TextDecoder().decode(child.stdout).trim(),
+    stderr: new TextDecoder().decode(child.stderr).trim(),
+    code: child.code,
+  };
 }
 
-_flush_group() {
-    local label="$1"
-    local children=0
-
-    # Count children (non-parent entries)
-    for line in "${group_lines[@]}"; do
-        [[ "$line" == "__CHILD__|"* ]] && children=$((children + 1))
-    done
-
-    local child_idx=0
-    for i in "${!group_lines[@]}"; do
-        local type="${group_lines[$i]%%|*}"
-        local name="${group_lines[$i]#*|}"
-        local meta="${group_metas[$i]}"
-        local display
-
-        if [[ "$type" == "__PARENT__" ]]; then
-            display="${label} > 📂 ${name}"
-        else
-            child_idx=$((child_idx + 1))
-            if [[ $child_idx -eq $children ]]; then
-                display="${label} >   └── ${name}"
-            else
-                display="${label} >   ├── ${name}"
-            fi
-        fi
-
-        # Output: hidden metadata \t display string
-        printf '%s\t%s\n' "$meta" "$display"
-    done
+async function exec(cmd: string, args: string[]): Promise<never> {
+  const command = new Deno.Command(cmd, {
+    args,
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const { code } = await command.output();
+  Deno.exit(code);
 }
 
-# Interactive multi-host project selection with fzf
-# Sets SELECTED_HOST and PROJECT_PATH globals
-select_project_multi() {
-    local entries="$1"
-    local fzf_input
-    fzf_input=$(build_fzf_entries "$entries")
-
-    if [[ -z "$fzf_input" ]]; then
-        error "No projects found on any configured host"
-    fi
-
-    local selected
-    selected=$(echo "$fzf_input" | fzf \
-        --height=60% \
-        --layout=reverse \
-        --border \
-        --cycle \
-        --delimiter=$'\t' \
-        --with-nth=2 \
-        --prompt="Select project: " \
-        --header="Select a project to open" \
-        --preview "'$SCRIPT_PATH' _preview_multi {1}")
-
-    [[ -z "$selected" ]] && { echo "Cancelled."; exit 0; }
-
-    # Extract host and path from the hidden metadata prefix
-    local meta
-    meta="${selected%%	*}"
-    IFS='|' read -r SELECTED_HOST PROJECT_PATH <<< "$meta"
+async function agentSend(message: string): Promise<Record<string, unknown>> {
+  let conn: Deno.UnixConn;
+  try {
+    conn = await Deno.connect({ transport: "unix", path: AGENT_SOCK });
+  } catch {
+    throw new Error(`Agent socket not found at ${AGENT_SOCK}\n  Is open-agent running? Check: launchctl list | grep open-agent`);
+  }
+  try {
+    await conn.write(new TextEncoder().encode(message + "\n"));
+    const buf = new Uint8Array(65536);
+    const n = await conn.read(buf);
+    if (!n) throw new Error("No response from agent");
+    const raw = new TextDecoder().decode(buf.subarray(0, n)).trim();
+    return JSON.parse(raw) as Record<string, unknown>;
+  } finally {
+    conn.close();
+  }
 }
 
-# Preview for multi-host selection (called by fzf --preview)
-# Argument: "host|path"
-cmd_preview_multi() {
-    local meta="$1"
-    local host path
-    IFS='|' read -r host path <<< "$meta"
-
-    ssh -o ConnectTimeout=2 "$host" "
-        echo '$path'
-        echo
-        if git -C '$path' rev-parse --git-dir >/dev/null 2>&1; then
-            echo 'Branch:'
-            git -C '$path' branch --show-current 2>/dev/null
-            echo
-            echo 'Recent commits:'
-            git -C '$path' log --oneline -5 2>/dev/null
-            echo
-        fi
-        echo 'Contents:'
-        ls -1 '$path' 2>/dev/null | head -20
-    " 2>/dev/null
+function fileExists(path: string): boolean {
+  try {
+    Deno.statSync(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-# Legacy single-host preview (called by fzf --preview)
-cmd_preview() {
-    local host="$1"
-    local dir="$2"
-    local item="$3"
-    local path
-
-    if [[ "$item" == 📂* ]]; then
-        path="$dir"
-    else
-        item=$(strip_tree_prefix "$item")
-        path="$dir/$item"
-    fi
-
-    ssh -o ConnectTimeout=2 "$host" "
-        echo '$path'
-        echo
-        if git -C '$path' rev-parse --git-dir >/dev/null 2>&1; then
-            echo 'Branch:'
-            git -C '$path' branch --show-current 2>/dev/null
-            echo
-            echo 'Recent commits:'
-            git -C '$path' log --oneline -5 2>/dev/null
-            echo
-        fi
-        echo 'Contents:'
-        ls -1 '$path' 2>/dev/null | head -20
-    " 2>/dev/null
+function socketExists(path: string): boolean {
+  try {
+    const stat = Deno.statSync(path);
+    // Deno doesn't expose isSocket, but if stat succeeds on a socket path it exists
+    return stat !== undefined;
+  } catch {
+    return false;
+  }
 }
 
-# Verify a specific project exists
-verify_project() {
-    local host="$1"
-    local project_path="$2"
-
-    if ! ssh -o BatchMode=yes "$host" "test -d '$project_path'" 2>/dev/null; then
-        error "Project not found at $project_path on $host"
-    fi
+function basename(path: string): string {
+  const parts = path.split("/");
+  return parts[parts.length - 1] ?? path;
 }
 
-# Get project selection - interactive or by name
-# For multi-host: if PROJECT_NAME is set, requires SELECTED_HOST to be set too
-# Sets globals: SELECTED_HOST, PROJECT_PATH
-get_project_selection() {
-    local project_name="${1:-}"
+// --- Config ---
 
-    if [[ -n "$project_name" ]]; then
-        # Direct project name requires a single host context
-        if [[ -z "$SELECTED_HOST" ]]; then
-            if [[ ${#HOST_ALIASES[@]} -eq 1 ]]; then
-                SELECTED_HOST="${HOST_ALIASES[0]}"
-            else
-                error "Project name requires --host when multiple hosts are configured"
-            fi
-        fi
-        # Find the matching host entry's directory
-        local target_dir=""
-        for i in "${!HOST_ALIASES[@]}"; do
-            if [[ "${HOST_ALIASES[$i]}" == "$SELECTED_HOST" ]]; then
-                target_dir="${HOST_DIRS[$i]}"
-                break
-            fi
-        done
-        [[ -z "$target_dir" ]] && error "Host $SELECTED_HOST not found in config"
+function resolveHostsFile(): { path: string; isLegacy: boolean } {
+  const canonical = `${OA_CONFIG_DIR}/remote-hosts`;
+  if (fileExists(canonical)) return { path: canonical, isLegacy: false };
 
-        local plabel
-        plabel=$(parent_label "$target_dir")
-        if [[ "$project_name" == "$plabel" ]] || [[ "$project_name" == "$(basename "$target_dir")" ]]; then
-            PROJECT_PATH="$target_dir"
-        else
-            PROJECT_PATH="$target_dir/$project_name"
-            verify_project "$SELECTED_HOST" "$PROJECT_PATH"
-        fi
-        info "Using project: $project_name on $SELECTED_HOST"
-    else
-        info "Discovering projects..."
-        local entries
-        entries=$(discover_all_projects)
+  const legacy = `${LEGACY_CONFIG_DIR}/hosts`;
+  if (fileExists(legacy)) {
+    warn(`Using legacy config at ${legacy} — move to ${canonical}`);
+    return { path: legacy, isLegacy: true };
+  }
 
-        if [[ -z "$entries" ]]; then
-            error "No projects found"
-        fi
-
-        select_project_multi "$entries"
-    fi
+  return { path: canonical, isLegacy: false };
 }
 
-# Help message
-show_help() {
-    cat << EOF
-Usage: $SCRIPT_NAME [command] [options] [project]
+function loadHosts(hostFilter: string | null): HostEntry[] {
+  const { path: hostsPath } = resolveHostsFile();
+
+  let hosts: HostEntry[] = [];
+
+  if (fileExists(hostsPath)) {
+    const text = Deno.readTextFileSync(hostsPath);
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const [alias, dir, label] = trimmed.split("|").map((s) => s.trim());
+      if (!alias || !dir) continue;
+      hosts.push({ alias, dir, label: label || alias });
+    }
+  } else {
+    // Try legacy single-host config
+    const legacyConfig = `${LEGACY_CONFIG_DIR}/config`;
+    if (fileExists(legacyConfig)) {
+      const text = Deno.readTextFileSync(legacyConfig);
+      let host = "workmbp";
+      let dir = "";
+      for (const line of text.split("\n")) {
+        const match = line.match(/^(\w+)="?([^"]*)"?/);
+        if (match) {
+          if (match[1] === "RPROJ_HOST") host = match[2];
+          if (match[1] === "RPROJ_DIR") dir = match[2];
+        }
+      }
+      if (dir) hosts.push({ alias: host, dir, label: host });
+    }
+  }
+
+  if (hosts.length === 0) {
+    error(`No hosts file found. Create ${OA_CONFIG_DIR}/remote-hosts with format: host|dir|label`);
+  }
+
+  if (hostFilter) {
+    hosts = hosts.filter((h) => h.alias === hostFilter);
+    if (hosts.length === 0) error(`No entries found for host: ${hostFilter}`);
+  }
+
+  return hosts;
+}
+
+// --- SSH helpers ---
+
+async function sshTestDir(host: string, path: string): Promise<boolean> {
+  const result = await run("ssh", [
+    "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
+    host, `test -d '${path}'`,
+  ], { timeout: SSH_TIMEOUT_MS });
+  return result.success;
+}
+
+async function sshListDirs(host: string, dir: string): Promise<string[]> {
+  const result = await run("ssh", [
+    "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
+    host, `find '${dir}' -maxdepth 1 -mindepth 1 -type d -not -name '.*' | sort`,
+  ], { timeout: SSH_TIMEOUT_MS });
+  if (!result.success) return [];
+  return result.stdout.split("\n").filter(Boolean);
+}
+
+async function sshGetHome(host: string): Promise<string> {
+  const result = await run("ssh", [
+    "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
+    host, "echo $HOME",
+  ], { timeout: SSH_TIMEOUT_MS });
+  if (!result.success) throw new Error(`Could not determine remote home on ${host}`);
+  return result.stdout;
+}
+
+// --- Project Discovery ---
+
+async function discoverProjects(hosts: HostEntry[]): Promise<ProjectEntry[]> {
+  const results = await Promise.all(
+    hosts.map(async (entry) => {
+      const dirs = await sshListDirs(entry.alias, entry.dir);
+      const entries: ProjectEntry[] = [
+        { host: entry.alias, baseDir: entry.dir, projectPath: entry.dir, label: entry.label },
+      ];
+      for (const d of dirs) {
+        entries.push({ host: entry.alias, baseDir: entry.dir, projectPath: d, label: entry.label });
+      }
+      return entries;
+    }),
+  );
+  return results.flat();
+}
+
+// --- fzf Integration ---
+
+function buildFzfEntries(projects: ProjectEntry[]): string {
+  const lines: string[] = [];
+  let currentLabel = "";
+  let group: { meta: string; type: "parent" | "child"; name: string }[] = [];
+
+  const flushGroup = (label: string) => {
+    if (group.length === 0) return;
+    const children = group.filter((g) => g.type === "child");
+    let childIdx = 0;
+    for (const entry of group) {
+      if (entry.type === "parent") {
+        lines.push(`${entry.meta}\t${label} > \u{1F4C2} ${entry.name}`);
+      } else {
+        childIdx++;
+        const connector = childIdx === children.length ? "\u2514\u2500\u2500" : "\u251C\u2500\u2500";
+        lines.push(`${entry.meta}\t${label} >   ${connector} ${entry.name}`);
+      }
+    }
+  };
+
+  for (const p of projects) {
+    if (p.label !== currentLabel) {
+      flushGroup(currentLabel);
+      currentLabel = p.label;
+      group = [];
+    }
+    const meta = `${p.host}|${p.projectPath}`;
+    if (p.projectPath === p.baseDir) {
+      group.push({ meta, type: "parent", name: basename(p.baseDir) });
+    } else {
+      group.push({ meta, type: "child", name: basename(p.projectPath) });
+    }
+  }
+  flushGroup(currentLabel);
+
+  return lines.join("\n");
+}
+
+async function fzfSelect(
+  input: string,
+  opts: { prompt: string; header: string; preview?: string; height?: string },
+): Promise<string | null> {
+  const args = [
+    "--height=" + (opts.height ?? "60%"),
+    "--layout=reverse",
+    "--border",
+    "--cycle",
+    "--delimiter=\t",
+    "--with-nth=2",
+    `--prompt=${opts.prompt}`,
+    `--header=${opts.header}`,
+  ];
+  if (opts.preview) args.push(`--preview=${opts.preview}`);
+
+  const result = await run("fzf", args, {
+    stdin: "piped",
+    input: new TextEncoder().encode(input),
+  });
+  if (!result.success) return null;
+  return result.stdout;
+}
+
+async function fzfSelectSimple(
+  items: string[],
+  opts: { prompt: string; header: string; height?: string },
+): Promise<string | null> {
+  const result = await run("fzf", [
+    "--height=" + (opts.height ?? "30%"),
+    "--layout=reverse",
+    "--border",
+    "--no-preview",
+    `--prompt=${opts.prompt}`,
+    `--header=${opts.header}`,
+  ], {
+    stdin: "piped",
+    input: new TextEncoder().encode(items.join("\n")),
+  });
+  if (!result.success) return null;
+  return result.stdout;
+}
+
+async function selectProject(
+  projects: ProjectEntry[],
+): Promise<{ host: string; path: string }> {
+  const fzfInput = buildFzfEntries(projects);
+  if (!fzfInput) error("No projects found on any configured host");
+
+  // Resolve the script path for fzf --preview
+  const scriptPath = new URL(import.meta.url).pathname;
+
+  const selected = await fzfSelect(fzfInput, {
+    prompt: "Select project: ",
+    header: "Select a project to open",
+    preview: `'${scriptPath}' _preview_multi {1}`,
+  });
+
+  if (!selected) {
+    console.log("Cancelled.");
+    Deno.exit(0);
+  }
+
+  const meta = selected.split("\t")[0];
+  const [host, ...pathParts] = meta.split("|");
+  return { host, path: pathParts.join("|") };
+}
+
+// --- Project Resolution ---
+
+async function resolveProjectOnHost(
+  hosts: HostEntry[],
+  hostAlias: string,
+  projectName: string,
+): Promise<ProjectMatch> {
+  const hostDirs = hosts.filter((h) => h.alias === hostAlias).map((h) => h.dir);
+  if (hostDirs.length === 0) error(`Host ${hostAlias} not found in config`);
+
+  // Check if project name matches a parent directory
+  for (const dir of hostDirs) {
+    if (projectName === basename(dir)) return { host: hostAlias, path: dir };
+  }
+
+  // Search all dirs for this host in parallel
+  const probes = hostDirs.map(async (dir) => {
+    const candidate = `${dir}/${projectName}`;
+    return (await sshTestDir(hostAlias, candidate)) ? candidate : null;
+  });
+  const found = (await Promise.all(probes)).filter((p): p is string => p !== null);
+
+  if (found.length === 0) error(`Project '${projectName}' not found on ${hostAlias}`);
+  if (found.length === 1) return { host: hostAlias, path: found[0] };
+
+  // Multiple matches on same host — let user pick
+  const selection = await fzfSelectSimple(found, {
+    prompt: "Multiple matches: ",
+    header: `Project '${projectName}' found in multiple directories on ${hostAlias}`,
+  });
+  if (!selection) { console.log("Cancelled."); Deno.exit(0); }
+  return { host: hostAlias, path: selection };
+}
+
+async function resolveProjectAcrossHosts(
+  hosts: HostEntry[],
+  projectName: string,
+): Promise<ProjectMatch> {
+  // Probe all host/dir combos in parallel
+  const probes = hosts.map(async (entry) => {
+    const candidate = `${entry.dir}/${projectName}`;
+    return (await sshTestDir(entry.alias, candidate))
+      ? { host: entry.alias, path: candidate }
+      : null;
+  });
+  const matches = (await Promise.all(probes)).filter(
+    (m): m is ProjectMatch => m !== null,
+  );
+
+  if (matches.length === 0) {
+    error(`Project '${projectName}' not found on any configured host`);
+  }
+  if (matches.length === 1) return matches[0];
+
+  // Multiple matches — fzf picker
+  const items = matches.map((m) => `${m.host}\t${m.host}: ${m.path}`);
+  const selected = await fzfSelect(items.join("\n"), {
+    prompt: "Select host: ",
+    header: `Project '${projectName}' found on multiple hosts`,
+    height: "30%",
+  });
+  if (!selected) { console.log("Cancelled."); Deno.exit(0); }
+  const selectedHost = selected.split("\t")[0];
+  return matches.find((m) => m.host === selectedHost)!;
+}
+
+async function getProjectSelection(
+  hosts: HostEntry[],
+  opts: Opts,
+): Promise<ProjectMatch> {
+  if (opts.projectName) {
+    if (opts.hostFilter) {
+      const match = await resolveProjectOnHost(hosts, opts.hostFilter, opts.projectName);
+      info(`Using project: ${opts.projectName} on ${match.host}`);
+      return match;
+    }
+    if (hosts.length === 1 || new Set(hosts.map((h) => h.alias)).size === 1) {
+      const match = await resolveProjectOnHost(hosts, hosts[0].alias, opts.projectName);
+      info(`Using project: ${opts.projectName} on ${match.host}`);
+      return match;
+    }
+    const match = await resolveProjectAcrossHosts(hosts, opts.projectName);
+    info(`Using project: ${opts.projectName} on ${match.host}`);
+    return match;
+  }
+
+  info("Discovering projects...");
+  const projects = await discoverProjects(hosts);
+  if (projects.length === 0) error("No projects found");
+  return await selectProject(projects);
+}
+
+// --- Subcommands ---
+
+async function cmdList(opts: Opts, isJson: boolean, query: string): Promise<void> {
+  const hosts = loadHosts(opts.hostFilter);
+  info("Discovering projects...");
+  const projects = await discoverProjects(hosts);
+
+  if (isJson) {
+    const items = projects
+      .filter((p) => {
+        if (!query) return true;
+        return basename(p.projectPath).toLowerCase().includes(query.toLowerCase());
+      })
+      .map((p) => {
+        const name = basename(p.projectPath);
+        const isParent = p.projectPath === p.baseDir;
+        const displayName = isParent ? `\u{1F4C2} ${name}` : name;
+        const multiHost = new Set(hosts.map((h) => h.alias)).size > 1;
+        const subtitle = multiHost
+          ? `[${p.label}] Open in VS Code: ${p.projectPath}`
+          : `Open in VS Code: ${p.projectPath}`;
+        return {
+          uid: `${p.host}_${name}`,
+          title: displayName,
+          subtitle,
+          arg: `${p.host}|${p.projectPath}`,
+          autocomplete: name,
+          icon: { path: "vscode.png" },
+        };
+      });
+    console.log(JSON.stringify({ items }, null, 2));
+    return;
+  }
+
+  if (projects.length === 0) {
+    warn("No projects found on any configured host");
+    return;
+  }
+
+  let currentLabel = "";
+  for (const p of projects) {
+    if (p.label !== currentLabel) {
+      if (currentLabel) console.log();
+      console.log(color.green(`${p.label}`) + ` (${p.host})`);
+      currentLabel = p.label;
+    }
+    if (p.projectPath === p.baseDir) {
+      console.log(`  \u{1F4C2} ${basename(p.baseDir)}`);
+    } else {
+      console.log(`  ${basename(p.projectPath)}`);
+    }
+  }
+}
+
+async function cmdTmux(opts: Opts): Promise<void> {
+  const hosts = loadHosts(opts.hostFilter);
+  const { host, path } = await getProjectSelection(hosts, opts);
+  const sessionName = basename(path);
+  success(`Opening tmux session '${sessionName}' at ${path} on ${host}...`);
+  await exec("ssh", ["-A", "-t", host, `cd '${path}' && ~/bin/tc`]);
+}
+
+async function cmdCode(opts: Opts): Promise<void> {
+  const hosts = loadHosts(opts.hostFilter);
+  const { host, path } = await getProjectSelection(hosts, opts);
+  success(`Opening ${path} in VS Code on ${host}...`);
+  await exec("code", ["--remote", `ssh-remote+${host}`, path]);
+}
+
+async function cmdFinder(opts: Opts): Promise<void> {
+  const hosts = loadHosts(opts.hostFilter);
+  const { host, path } = await getProjectSelection(hosts, opts);
+
+  info("Resolving remote home directory...");
+  const remoteHome = await sshGetHome(host);
+
+  success(`Opening ${path} in Finder...`);
+  const response = await agentSend(JSON.stringify({
+    action: "open",
+    host,
+    remoteHome,
+    path,
+  }));
+
+  if (response.ok === true) {
+    if (typeof response.localPath === "string") {
+      success(`Opened: ${response.localPath}`);
+    }
+  } else {
+    const errMsg = typeof response.error === "string" ? response.error : "unknown error";
+    error(errMsg);
+  }
+}
+
+async function cmdDefault(opts: Opts): Promise<void> {
+  const hosts = loadHosts(opts.hostFilter);
+  const { host, path } = await getProjectSelection(hosts, opts);
+  const projectDisplay = basename(path);
+
+  const actions = ["tmux", "code"];
+  if (socketExists(AGENT_SOCK)) actions.push("finder");
+
+  const action = await fzfSelectSimple(actions, {
+    prompt: "Action: ",
+    header: `Open '${projectDisplay}' (${host}) with:`,
+  });
+  if (!action) { console.log("Cancelled."); Deno.exit(0); }
+
+  switch (action) {
+    case "tmux": {
+      const sessionName = basename(path);
+      success(`Opening tmux session '${sessionName}' at ${path}...`);
+      await exec("ssh", ["-A", "-t", host, `cd '${path}' && ~/bin/tc`]);
+      break;
+    }
+    case "code":
+      success(`Opening ${path} in VS Code...`);
+      await exec("code", ["--remote", `ssh-remote+${host}`, path]);
+      break;
+    case "finder": {
+      info("Resolving remote home directory...");
+      const remoteHome = await sshGetHome(host);
+      success(`Opening ${path} in Finder...`);
+      const response = await agentSend(JSON.stringify({ action: "open", host, remoteHome, path }));
+      if (response.ok === true && typeof response.localPath === "string") {
+        success(`Opened: ${response.localPath}`);
+      } else {
+        error(typeof response.error === "string" ? response.error : "unknown error");
+      }
+      break;
+    }
+  }
+}
+
+async function cmdStatus(): Promise<void> {
+  const response = await agentSend('{"action":"status"}');
+
+  console.log("Agent: running");
+
+  const sessions = response.sessions as Record<string, unknown> | undefined ?? {};
+  const mounts = response.mounts as Record<string, unknown> | undefined ?? {};
+
+  console.log(`Sessions: ${Object.keys(sessions).length} active`);
+  for (const [host, sids] of Object.entries(sessions)) {
+    const count = Array.isArray(sids) ? sids.length : sids;
+    console.log(`  ${host}: ${count} session(s)`);
+  }
+
+  console.log(`Mounts: ${Object.keys(mounts).length} active`);
+  for (const [host, info] of Object.entries(mounts)) {
+    const mountPath = typeof info === "string" ? info : (info as Record<string, unknown>)?.path ?? "unknown";
+    console.log(`  ${host}: ${mountPath}`);
+  }
+}
+
+function cmdSetup(opts: Opts): void {
+  const hosts = loadHosts(opts.hostFilter);
+  const seen = new Set<string>();
+
+  for (const entry of hosts) {
+    if (seen.has(entry.alias)) continue;
+    seen.add(entry.alias);
+
+    console.log(`
+Host ${entry.alias}
+    SetEnv OPEN_AGENT_HOST=${entry.alias}
+    RemoteForward /tmp/open-agent.sock ~/.local/share/open-agent/open-agent.sock
+    StreamLocalBindUnlink yes
+    ServerAliveInterval 30
+    ServerAliveCountMax 3`);
+  }
+
+  console.log();
+  console.log("# Add the above to ~/.ssh/config (optional — SetEnv requires AcceptEnv on the remote sshd).");
+  console.log();
+  console.log("# Alternatively, create an identity file on each remote host:");
+  for (const alias of seen) {
+    console.log(`#   ssh ${alias} 'mkdir -p ~/.config/open-agent && echo ${alias} > ~/.config/open-agent/identity'`);
+  }
+  console.log("#");
+  console.log("# The hook resolves host identity in this order:");
+  console.log("#   1. OPEN_AGENT_HOST env var (via SetEnv/AcceptEnv)");
+  console.log("#   2. ~/.config/open-agent/identity file");
+  console.log("#   3. $(hostname -s) fallback");
+}
+
+async function cmdOpen(arg: string): Promise<void> {
+  const pipeIdx = arg.indexOf("|");
+  if (pipeIdx === -1) error("Invalid argument format. Expected 'host|path'");
+  const host = arg.substring(0, pipeIdx);
+  const path = arg.substring(pipeIdx + 1);
+  if (!host || !path) error("Invalid argument format. Expected 'host|path'");
+  await exec("code", ["--remote", `ssh-remote+${host}`, path]);
+}
+
+async function cmdPreviewMulti(meta: string): Promise<void> {
+  const [host, ...pathParts] = meta.split("|");
+  const path = pathParts.join("|");
+
+  const result = await run("ssh", [
+    "-o", "ConnectTimeout=2", host,
+    `echo '${path}'; echo; ` +
+    `if git -C '${path}' rev-parse --git-dir >/dev/null 2>&1; then ` +
+    `echo 'Branch:'; git -C '${path}' branch --show-current 2>/dev/null; echo; ` +
+    `echo 'Recent commits:'; git -C '${path}' log --oneline -5 2>/dev/null; echo; fi; ` +
+    `echo 'Contents:'; ls -1 '${path}' 2>/dev/null | head -20`,
+  ], { timeout: SSH_TIMEOUT_MS });
+  if (result.stdout) console.log(result.stdout);
+}
+
+async function cmdPreview(host: string, dir: string, item: string): Promise<void> {
+  let path: string;
+  if (item.startsWith("\u{1F4C2}")) {
+    path = dir;
+  } else {
+    // Strip tree-drawing prefix
+    const stripped = item.replace(/^\s*[├└]── /, "");
+    path = `${dir}/${stripped}`;
+  }
+
+  const result = await run("ssh", [
+    "-o", "ConnectTimeout=2", host,
+    `echo '${path}'; echo; ` +
+    `if git -C '${path}' rev-parse --git-dir >/dev/null 2>&1; then ` +
+    `echo 'Branch:'; git -C '${path}' branch --show-current 2>/dev/null; echo; ` +
+    `echo 'Recent commits:'; git -C '${path}' log --oneline -5 2>/dev/null; echo; fi; ` +
+    `echo 'Contents:'; ls -1 '${path}' 2>/dev/null | head -20`,
+  ], { timeout: SSH_TIMEOUT_MS });
+  if (result.stdout) console.log(result.stdout);
+}
+
+// --- Help ---
+
+function showHelp(): void {
+  console.log(`Usage: ${SCRIPT_NAME} [command] [options] [project]
 
 Commands:
     list    (l)   List remote projects
@@ -424,418 +760,157 @@ Options:
     --help            Show this help
 
 Config:
-    Hosts: $OA_CONFIG_DIR/remote-hosts
-    Legacy: $LEGACY_CONFIG_DIR/hosts (auto-detected with warning)
+    Hosts: ${OA_CONFIG_DIR}/remote-hosts
+    Legacy: ${LEGACY_CONFIG_DIR}/hosts (auto-detected with warning)
 
 Examples:
-    $SCRIPT_NAME                         # Interactive: pick project & action
-    $SCRIPT_NAME l                       # List all projects from all hosts
-    $SCRIPT_NAME list -h workmbp         # List projects on workmbp only
-    $SCRIPT_NAME list --json             # JSON output for Alfred
-    $SCRIPT_NAME t                       # Interactive tmux selection
-    $SCRIPT_NAME tmux -h workmbp proj    # Direct tmux on specific host
-    $SCRIPT_NAME c                       # Interactive VS Code selection
-    $SCRIPT_NAME f                       # Interactive: open project in Finder
-    $SCRIPT_NAME setup                   # Print SSH config recommendations
-    $SCRIPT_NAME s                       # Check open-agent status
-EOF
-    exit 0
+    ${SCRIPT_NAME}                         # Interactive: pick project & action
+    ${SCRIPT_NAME} l                       # List all projects from all hosts
+    ${SCRIPT_NAME} list -h workmbp         # List projects on workmbp only
+    ${SCRIPT_NAME} list --json             # JSON output for Alfred
+    ${SCRIPT_NAME} t                       # Interactive tmux selection
+    ${SCRIPT_NAME} tmux -h workmbp proj    # Direct tmux on specific host
+    ${SCRIPT_NAME} c                       # Interactive VS Code selection
+    ${SCRIPT_NAME} f                       # Interactive: open project in Finder
+    ${SCRIPT_NAME} setup                   # Print SSH config recommendations
+    ${SCRIPT_NAME} s                       # Check open-agent status`);
 }
 
-# Parse common options for a subcommand
-# Sets: HOST_FILTER, SELECTED_HOST, PROJECT_NAME, JSON_MODE, QUERY
-parse_options() {
-    PROJECT_NAME=""
+// --- Argument Parsing ---
 
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            --help)
-                show_help
-                ;;
-            -h|--host)
-                if [[ $# -lt 2 ]]; then
-                    error "Option $1 requires a host argument"
-                fi
-                HOST_FILTER="$2"
-                SELECTED_HOST="$2"
-                shift 2
-                ;;
-            -p)
-                if [[ $# -lt 2 ]]; then
-                    error "Option -p requires a project name"
-                fi
-                PROJECT_NAME="$2"
-                shift 2
-                ;;
-            --json)
-                JSON_MODE=true
-                shift
-                ;;
-            -q)
-                if [[ $# -lt 2 ]]; then
-                    error "Option -q requires a query string"
-                fi
-                QUERY="$2"
-                shift 2
-                ;;
-            -*)
-                error "Unknown option: $1"
-                ;;
-            *)
-                # Positional argument is project name
-                PROJECT_NAME="$1"
-                shift
-                ;;
-        esac
-    done
-}
+function parseArgs(args: string[]): Command {
+  if (args.length === 0) return { cmd: "default", opts: { hostFilter: null, projectName: null } };
 
-# Output projects as Alfred JSON (multi-host aware)
-output_alfred_json() {
-    local entries="$1"
-    local query="$2"
+  const first = args[0];
 
-    if [[ -z "$entries" ]]; then
-        cat << EOF
-{"items": [{
-    "title": "No Projects Found",
-    "subtitle": "No projects found on configured hosts",
-    "valid": false,
-    "icon": {"path": "error.png"}
-}]}
-EOF
-        return
-    fi
+  // Internal preview commands (called by fzf)
+  if (first === "_preview_multi") {
+    return { cmd: "preview_multi", meta: args[1] ?? "" };
+  }
+  if (first === "_preview") {
+    return { cmd: "preview", host: args[1] ?? "", dir: args[2] ?? "", item: args[3] ?? "" };
+  }
 
-    echo '{"items": ['
+  // Map short aliases
+  const cmdMap: Record<string, string> = {
+    l: "list", t: "tmux", c: "code", f: "finder", s: "status", o: "open",
+  };
+  const cmdName = cmdMap[first] ?? first;
 
-    local first=true
-    while IFS='|' read -r host base_dir project_path label; do
-        [[ -z "$host" ]] && continue
+  if (cmdName === "help" || cmdName === "--help") return { cmd: "help" };
+  if (cmdName === "status") return { cmd: "status" };
+  if (cmdName === "open") return { cmd: "open", arg: args[1] ?? error("Usage: rproj open 'host|path'") };
 
-        local project_name display_name subtitle
-        project_name=$(basename "$project_path")
+  // Parse options for remaining commands
+  const rest = args.slice(1);
+  let hostFilter: string | null = null;
+  let projectName: string | null = null;
+  let isJson = false;
+  let query = "";
+  let i = 0;
 
-        if [[ "$project_path" == "$base_dir" ]]; then
-            display_name="$(parent_label "$base_dir")"
-        else
-            display_name="$project_name"
-        fi
-
-        # Prefix with label if multiple hosts
-        if [[ ${#HOST_ALIASES[@]} -gt 1 ]] || [[ $(printf '%s\n' "${HOST_ALIASES[@]}" | sort -u | wc -l) -gt 1 ]]; then
-            subtitle="[$label] Open in VS Code: $project_path"
-        else
-            subtitle="Open in VS Code: $project_path"
-        fi
-
-        # Filter by query if provided (case-insensitive)
-        if [[ -n "$query" ]] && [[ ! "${project_name,,}" =~ ${query,,} ]]; then
-            continue
-        fi
-
-        if [[ "$first" != "true" ]]; then
-            echo ","
-        fi
-        first=false
-
-        cat << EOF
-{
-    "uid": "${host}_${project_name}",
-    "title": "$display_name",
-    "subtitle": "$subtitle",
-    "arg": "$host|$project_path",
-    "autocomplete": "$project_name",
-    "icon": {"path": "vscode.png"}
-}
-EOF
-    done <<< "$entries"
-
-    echo ']}'
-}
-
-# Command: list
-cmd_list() {
-    parse_options "$@"
-    load_hosts
-
-    info "Discovering projects..."
-    local entries
-    entries=$(discover_all_projects)
-
-    if [[ "$JSON_MODE" == "true" ]]; then
-        output_alfred_json "$entries" "$QUERY"
-    else
-        if [[ -z "$entries" ]]; then
-            warn "No projects found on any configured host"
-            return
-        fi
-
-        local current_label=""
-        while IFS='|' read -r host base_dir project_path label; do
-            [[ -z "$host" ]] && continue
-
-            # Print label header when it changes
-            if [[ "$label" != "$current_label" ]]; then
-                [[ -n "$current_label" ]] && echo ""
-                echo -e "${GREEN}${label}${NC} ($host)"
-                current_label="$label"
-            fi
-
-            if [[ "$project_path" == "$base_dir" ]]; then
-                echo "  $(parent_label "$base_dir")"
-            else
-                echo "  $(basename "$project_path")"
-            fi
-        done <<< "$entries"
-    fi
-}
-
-# Command: tmux
-cmd_tmux() {
-    parse_options "$@"
-    load_hosts
-    get_project_selection "$PROJECT_NAME"
-
-    local session_name
-    session_name=$(basename "$PROJECT_PATH")
-    success "Opening tmux session '$session_name' at $PROJECT_PATH on $SELECTED_HOST..."
-
-    ssh -A -t "$SELECTED_HOST" "cd '$PROJECT_PATH' && ~/bin/tc"
-}
-
-# Command: code
-cmd_code() {
-    parse_options "$@"
-    load_hosts
-    get_project_selection "$PROJECT_NAME"
-
-    success "Opening $PROJECT_PATH in VS Code on $SELECTED_HOST..."
-    code --remote "ssh-remote+$SELECTED_HOST" "$PROJECT_PATH"
-}
-
-# Command: default (interactive project + action selection)
-cmd_default() {
-    parse_options "$@"
-    load_hosts
-    get_project_selection "$PROJECT_NAME"
-
-    local project_display
-    project_display=$(basename "$PROJECT_PATH")
-
-    local options="tmux\ncode"
-    # Only show finder option if open-agent is running
-    if [[ -S "$OA_SOCK" ]]; then
-        options="$options\nfinder"
-    fi
-
-    local action
-    action=$(printf "$options" | fzf \
-        --height=30% \
-        --layout=reverse \
-        --border \
-        --no-preview \
-        --prompt="Action: " \
-        --header="Open '$project_display' ($SELECTED_HOST) with:")
-
-    [[ -z "$action" ]] && { echo "Cancelled."; exit 0; }
-
-    case "$action" in
-        tmux)
-            local session_name
-            session_name=$(basename "$PROJECT_PATH")
-            success "Opening tmux session '$session_name' at $PROJECT_PATH..."
-            ssh -A -t "$SELECTED_HOST" "cd '$PROJECT_PATH' && ~/bin/tc"
-            ;;
-        code)
-            success "Opening $PROJECT_PATH in VS Code..."
-            code --remote "ssh-remote+$SELECTED_HOST" "$PROJECT_PATH"
-            ;;
-        finder)
-            _do_finder "$SELECTED_HOST" "$PROJECT_PATH"
-            ;;
-    esac
-}
-
-# --- open-agent helpers ---
-
-# Wrapper that checks socket with rproj's error() (supports JSON mode)
-_oa_checked_send() {
-    if [[ ! -S "$OA_SOCK" ]]; then
-        error "Agent socket not found at $OA_SOCK\n  Is open-agent running? Check: launchctl list | grep open-agent"
-    fi
-    oa_send "$1"
-}
-
-_oa_get_remote_home() {
-    local host="$1"
-    ssh -o BatchMode=yes -o ConnectTimeout=3 "$host" 'echo $HOME' 2>/dev/null
-}
-
-# Internal: perform finder open for a given host and project path
-_do_finder() {
-    local host="$1"
-    local path="$2"
-
-    info "Resolving remote home directory..."
-    local remote_home
-    remote_home=$(_oa_get_remote_home "$host") || {
-        error "Could not determine remote home directory on $host"
+  while (i < rest.length) {
+    const arg = rest[i];
+    switch (arg) {
+      case "--help":
+        return { cmd: "help" };
+      case "-h":
+      case "--host":
+        i++;
+        hostFilter = rest[i] ?? error(`Option ${arg} requires a host argument`);
+        break;
+      case "-p":
+        i++;
+        projectName = rest[i] ?? error("Option -p requires a project name");
+        break;
+      case "--json":
+        isJson = true;
+        break;
+      case "-q":
+        i++;
+        query = rest[i] ?? error("Option -q requires a query string");
+        break;
+      default:
+        if (arg.startsWith("-")) error(`Unknown option: ${arg}`);
+        projectName = arg;
+        break;
     }
+    i++;
+  }
 
-    local host_esc path_esc home_esc
-    host_esc=$(oa_json_escape "$host")
-    path_esc=$(oa_json_escape "$path")
-    home_esc=$(oa_json_escape "$remote_home")
+  const opts: Opts = { hostFilter, projectName };
 
-    local msg="{\"action\":\"open\",\"host\":${host_esc},\"remoteHome\":${home_esc},\"path\":${path_esc}}"
-    success "Opening $path in Finder..."
-
-    local response
-    response=$(_oa_checked_send "$msg") || {
-        error "Failed to communicate with open-agent"
-    }
-
-    if echo "$response" | grep -q '"ok":true'; then
-        local local_path
-        local_path=$(echo "$response" | grep -o '"localPath":"[^"]*"' | head -1 | sed 's/"localPath":"//' | sed 's/"$//')
-        if [[ -n "$local_path" ]]; then
-            success "Opened: $local_path"
-        fi
-    else
-        local err_msg
-        err_msg=$(echo "$response" | grep -o '"error":"[^"]*"' | head -1 | sed 's/"error":"//' | sed 's/"$//')
-        error "${err_msg:-unknown error from agent}"
-    fi
+  switch (cmdName) {
+    case "list": return { cmd: "list", opts, json: isJson, query };
+    case "tmux": return { cmd: "tmux", opts };
+    case "code": return { cmd: "code", opts };
+    case "finder": return { cmd: "finder", opts };
+    case "setup": return { cmd: "setup", opts };
+    default:
+      // If the first arg looks like an option, treat as default with options
+      if (first.startsWith("-")) {
+        // Re-parse everything as options for default command
+        return parseArgs(["default", ...args]);
+      }
+      error(`Unknown command: ${first}. Use '${SCRIPT_NAME} help' for usage.`);
+  }
 }
 
-# Command: finder — open project in local Finder via SSHFS
-cmd_finder() {
-    parse_options "$@"
-    load_hosts
-    get_project_selection "$PROJECT_NAME"
-    _do_finder "$SELECTED_HOST" "$PROJECT_PATH"
+// --- Main ---
+
+async function main(): Promise<void> {
+  const command = parseArgs([...Deno.args]);
+
+  // Set JSON mode globally for logging
+  if (command.cmd === "list" && command.json) {
+    jsonMode = true;
+  }
+
+  switch (command.cmd) {
+    case "list":
+      await cmdList(command.opts, command.json, command.query);
+      break;
+    case "tmux":
+      await cmdTmux(command.opts);
+      break;
+    case "code":
+      await cmdCode(command.opts);
+      break;
+    case "finder":
+      await cmdFinder(command.opts);
+      break;
+    case "default":
+      await cmdDefault(command.opts);
+      break;
+    case "status":
+      await cmdStatus();
+      break;
+    case "setup":
+      cmdSetup(command.opts);
+      break;
+    case "open":
+      await cmdOpen(command.arg);
+      break;
+    case "preview_multi":
+      await cmdPreviewMulti(command.meta);
+      break;
+    case "preview":
+      await cmdPreview(command.host, command.dir, command.item);
+      break;
+    case "help":
+      showHelp();
+      break;
+  }
 }
 
-# Command: agent-status — check open-agent daemon status
-cmd_agent_status() {
-    if [[ ! -S "$OA_SOCK" ]]; then
-        echo -e "${RED}Agent is not running${NC} (no socket at $OA_SOCK)"
-        exit 1
-    fi
-    _oa_checked_send '{"action":"status"}'
-}
-
-# Command: open (for Alfred - opens with host|path format)
-cmd_open() {
-    if [[ $# -lt 1 ]]; then
-        error "Usage: $SCRIPT_NAME open 'host|path'"
-    fi
-
-    local arg="$1"
-    local host path
-    IFS='|' read -r host path <<< "$arg"
-
-    if [[ -z "$host" ]] || [[ -z "$path" ]]; then
-        error "Invalid argument format. Expected 'host|path'"
-    fi
-
-    code --remote "ssh-remote+$host" "$path"
-}
-
-# Command: setup — print recommended SSH config for configured hosts
-cmd_setup() {
-    parse_options "$@"
-    load_hosts
-
-    local -a seen_hosts=()
-    for i in "${!HOST_ALIASES[@]}"; do
-        local host="${HOST_ALIASES[$i]}"
-        # Skip duplicates
-        local already_seen=false
-        for seen in "${seen_hosts[@]+"${seen_hosts[@]}"}"; do
-            if [[ "$seen" == "$host" ]]; then
-                already_seen=true
-                break
-            fi
-        done
-        [[ "$already_seen" == "true" ]] && continue
-        seen_hosts+=("$host")
-
-        cat <<EOF
-
-Host $host
-    SetEnv OPEN_AGENT_HOST=$host
-    RemoteForward /tmp/open-agent.sock ~/.local/share/open-agent/open-agent.sock
-    StreamLocalBindUnlink yes
-    ServerAliveInterval 30
-    ServerAliveCountMax 3
-EOF
-    done
-
-    echo ""
-    echo "# Add the above to ~/.ssh/config (optional — SetEnv requires AcceptEnv on the remote sshd)."
-    echo ""
-    echo "# Alternatively, create an identity file on each remote host:"
-    for host in "${seen_hosts[@]}"; do
-        echo "#   ssh $host 'mkdir -p ~/.config/open-agent && echo $host > ~/.config/open-agent/identity'"
-    done
-    echo "#"
-    echo "# The hook resolves host identity in this order:"
-    echo "#   1. OPEN_AGENT_HOST env var (via SetEnv/AcceptEnv)"
-    echo "#   2. ~/.config/open-agent/identity file"
-    echo "#   3. \$(hostname -s) fallback"
-}
-
-# Main
-main() {
-    if [[ $# -lt 1 ]]; then
-        cmd_default
-        return
-    fi
-
-    local command="$1"
-    shift
-
-    case "$command" in
-        l|list)
-            cmd_list "$@"
-            ;;
-        t|tmux)
-            cmd_tmux "$@"
-            ;;
-        c|code)
-            cmd_code "$@"
-            ;;
-        f|finder)
-            cmd_finder "$@"
-            ;;
-        s|status)
-            cmd_agent_status "$@"
-            ;;
-        setup)
-            cmd_setup "$@"
-            ;;
-        o|open)
-            cmd_open "$@"
-            ;;
-        _preview)
-            cmd_preview "$@"
-            ;;
-        _preview_multi)
-            cmd_preview_multi "$@"
-            ;;
-        help|--help)
-            show_help
-            ;;
-        -*)
-            # Options without a subcommand -> interactive mode
-            cmd_default "$command" "$@"
-            ;;
-        *)
-            error "Unknown command: $command. Use '$SCRIPT_NAME help' for usage."
-            ;;
-    esac
-}
-
-main "$@"
+main().catch((err: unknown) => {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (jsonMode) {
+    console.log(JSON.stringify({
+      items: [{ title: "Error", subtitle: msg, valid: false, icon: { path: "error.png" } }],
+    }));
+    Deno.exit(0);
+  }
+  console.error(color.red(`Error: ${msg}`));
+  Deno.exit(1);
+});
