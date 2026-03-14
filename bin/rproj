@@ -18,6 +18,7 @@
 import { red, green, blue, yellow } from "jsr:@std/fmt@1/colors";
 import { basename } from "jsr:@std/path@1/basename";
 import { existsSync } from "jsr:@std/fs@1/exists";
+import { parseArgs as denoParseArgs } from "jsr:@std/cli@1/parse-args";
 
 // --- Constants ---
 
@@ -782,55 +783,31 @@ function parseArgs(args: string[]): Command {
   if (cmdName === "status") return { cmd: "status" };
   if (cmdName === "open") return { cmd: "open", arg: args[1] ?? error("Usage: rproj open 'host|path'") };
 
-  // Parse options for remaining commands
-  const rest = args.slice(1);
-  let hostFilter: string | null = null;
-  let projectName: string | null = null;
-  let isJson = false;
-  let query = "";
-  let i = 0;
+  // Parse flags from remaining args
+  const parsed = denoParseArgs(args.slice(1), {
+    string: ["host", "p", "q"],
+    boolean: ["json", "help"],
+    alias: { h: "host" },
+    unknown: (opt) => {
+      if (opt.startsWith("-")) error(`Unknown option: ${opt}`);
+      return true;
+    },
+  });
 
-  while (i < rest.length) {
-    const arg = rest[i];
-    switch (arg) {
-      case "--help":
-        return { cmd: "help" };
-      case "-h":
-      case "--host":
-        i++;
-        hostFilter = rest[i] ?? error(`Option ${arg} requires a host argument`);
-        break;
-      case "-p":
-        i++;
-        projectName = rest[i] ?? error("Option -p requires a project name");
-        break;
-      case "--json":
-        isJson = true;
-        break;
-      case "-q":
-        i++;
-        query = rest[i] ?? error("Option -q requires a query string");
-        break;
-      default:
-        if (arg.startsWith("-")) error(`Unknown option: ${arg}`);
-        projectName = arg;
-        break;
-    }
-    i++;
-  }
+  if (parsed.help) return { cmd: "help" };
 
+  const hostFilter = (parsed.host as string | undefined) ?? null;
+  const projectName = (parsed.p as string | undefined) ?? (parsed._ [0] as string | undefined) ?? null;
   const opts: Opts = { hostFilter, projectName };
 
   switch (cmdName) {
-    case "list": return { cmd: "list", opts, json: isJson, query };
+    case "list": return { cmd: "list", opts, json: !!parsed.json, query: (parsed.q as string | undefined) ?? "" };
     case "tmux": return { cmd: "tmux", opts };
     case "code": return { cmd: "code", opts };
     case "finder": return { cmd: "finder", opts };
     case "setup": return { cmd: "setup", opts };
     default:
-      // If the first arg looks like an option, treat as default with options
       if (first.startsWith("-")) {
-        // Re-parse everything as options for default command
         return parseArgs(["default", ...args]);
       }
       error(`Unknown command: ${first}. Use '${SCRIPT_NAME} help' for usage.`);
