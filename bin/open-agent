@@ -9,6 +9,9 @@
 //   version                   Print version
 //   help                      Show this help
 
+import { red, green, yellow, blue } from "jsr:@std/fmt@1/colors";
+import { existsSync } from "jsr:@std/fs@1/exists";
+
 const VERSION = "0.2.0";
 const REPO_OWNER = "tlockney";
 const REPO_NAME = "open-agent";
@@ -28,29 +31,16 @@ const AGENT_SOCK = `${HOME}/.local/share/open-agent/open-agent.sock`;
 // Resolve SCRIPT_DIR — the directory containing this script
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
 
-// --- Colors ---
-
-const color = {
-  red: (s: string) => `\x1b[0;31m${s}\x1b[0m`,
-  green: (s: string) => `\x1b[0;32m${s}\x1b[0m`,
-  yellow: (s: string) => `\x1b[0;33m${s}\x1b[0m`,
-  blue: (s: string) => `\x1b[0;34m${s}\x1b[0m`,
-};
-
-function info(msg: string): void { console.log(`${color.green("✓")} ${msg}`); }
-function warn(msg: string): void { console.log(`${color.yellow("⚠")} ${msg}`); }
-function step(msg: string): void { console.log(`${color.blue("→")} ${msg}`); }
+function info(msg: string): void { console.log(`${green("✓")} ${msg}`); }
+function warn(msg: string): void { console.log(`${yellow("⚠")} ${msg}`); }
+function step(msg: string): void { console.log(`${blue("→")} ${msg}`); }
 
 function fail(msg: string): never {
-  console.error(`${color.red("✗")} ${msg}`);
+  console.error(`${red("✗")} ${msg}`);
   Deno.exit(1);
 }
 
 // --- Utilities ---
-
-function fileExists(path: string): boolean {
-  try { Deno.statSync(path); return true; } catch { return false; }
-}
 
 async function run(
   cmd: string,
@@ -110,8 +100,8 @@ async function agentSend(message: string): Promise<Record<string, unknown>> {
 
 function loadHostAliases(): string[] {
   let hostsPath = HOSTS_FILE;
-  if (!fileExists(hostsPath)) {
-    if (fileExists(LEGACY_HOSTS_FILE)) {
+  if (!existsSync(hostsPath)) {
+    if (existsSync(LEGACY_HOSTS_FILE)) {
       hostsPath = LEGACY_HOSTS_FILE;
       warn(`Using legacy hosts file at ${hostsPath}`);
     } else {
@@ -146,10 +136,10 @@ async function cmdSetupRemote(target: string): Promise<void> {
 
   // Find open-agent-hook.sh
   let hookPath = `${SCRIPT_DIR}/../open-agent-hook.sh`;
-  if (!fileExists(hookPath)) {
+  if (!existsSync(hookPath)) {
     hookPath = `${HOME}/.local/share/open-agent/open-agent-hook.sh`;
   }
-  if (!fileExists(hookPath)) fail("Cannot find open-agent-hook.sh");
+  if (!existsSync(hookPath)) fail("Cannot find open-agent-hook.sh");
 
   // Build tarball
   step("Building deploy package...");
@@ -162,7 +152,7 @@ async function cmdSetupRemote(target: string): Promise<void> {
   const remoteScripts = ["ropen", "rcode", "rcopy", "rpaste", "rnotify", "rop", "rpush", "rpull"];
   for (const script of remoteScripts) {
     const src = `${SCRIPT_DIR}/${script}`;
-    if (fileExists(src)) {
+    if (existsSync(src)) {
       await Deno.copyFile(src, `${tmpDir}/bin/${script}`);
     }
   }
@@ -271,7 +261,7 @@ async function cmdUpdate(): Promise<void> {
 
   step("Installing...");
   const installScript = `${extracted}/install.sh`;
-  if (!fileExists(installScript)) {
+  if (!existsSync(installScript)) {
     try { await Deno.remove(tmpDir, { recursive: true }); } catch { /* ignore */ }
     fail("install.sh not found in release tarball");
   }
@@ -370,6 +360,6 @@ async function main(): Promise<void> {
 
 main().catch((err: unknown) => {
   const msg = err instanceof Error ? err.message : String(err);
-  console.error(color.red(`✗ ${msg}`));
+  console.error(red(`✗ ${msg}`));
   Deno.exit(1);
 });

@@ -1,7 +1,10 @@
 #!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net=unix
 
-// open-agent: local daemon that receives open requests from remote machines
-// via a forwarded Unix socket, manages SSHFS mounts, and opens files locally.
+// open-agent-daemon: local daemon that receives open requests from remote
+// machines via a forwarded Unix socket, manages SSHFS mounts, and opens
+// files locally.
+
+import { normalize } from "jsr:@std/path@1/normalize";
 
 const VERSION = "0.2.0";
 
@@ -296,18 +299,9 @@ function scheduleUnmount(host: string): void {
 
 // --- Path translation ---
 
-function normalizePath(p: string): string {
-  const parts: string[] = [];
-  for (const seg of p.split("/")) {
-    if (seg === "..") parts.pop();
-    else if (seg !== "." && seg !== "") parts.push(seg);
-  }
-  return "/" + parts.join("/");
-}
-
 function translatePath(remotePath: string, state: MountState): string {
-  const normalized = normalizePath(remotePath);
-  const normalizedHome = normalizePath(state.remoteHome);
+  const normalized = normalize(remotePath);
+  const normalizedHome = normalize(state.remoteHome);
   if (normalized === normalizedHome || normalized.startsWith(normalizedHome + "/")) {
     const relative = normalized.slice(normalizedHome.length);
     return state.mountPoint + relative;

@@ -15,6 +15,10 @@
 //   open (o)   — Open from Alfred (host|path format)
 //   help       — Show this help
 
+import { red, green, blue, yellow } from "jsr:@std/fmt@1/colors";
+import { basename } from "jsr:@std/path@1/basename";
+import { existsSync } from "jsr:@std/fs@1/exists";
+
 // --- Constants ---
 
 const HOME = Deno.env.get("HOME") ?? "";
@@ -29,15 +33,6 @@ const LEGACY_CONFIG_DIR = `${XDG_CONFIG}/rproj`;
 const AGENT_SOCK = `${HOME}/.local/share/open-agent/open-agent.sock`;
 const SCRIPT_NAME = "rproj";
 const SSH_TIMEOUT_MS = 5_000;
-
-// --- Colors ---
-
-const color = {
-  red: (s: string) => `\x1b[0;31m${s}\x1b[0m`,
-  green: (s: string) => `\x1b[0;32m${s}\x1b[0m`,
-  blue: (s: string) => `\x1b[0;34m${s}\x1b[0m`,
-  yellow: (s: string) => `\x1b[0;33m${s}\x1b[0m`,
-};
 
 // --- Types ---
 
@@ -82,13 +77,13 @@ type Command =
 let jsonMode = false;
 
 function info(msg: string): void {
-  if (!jsonMode) console.error(color.blue(msg));
+  if (!jsonMode) console.error(blue(msg));
 }
 function success(msg: string): void {
-  if (!jsonMode) console.error(color.green(msg));
+  if (!jsonMode) console.error(green(msg));
 }
 function warn(msg: string): void {
-  if (!jsonMode) console.error(color.yellow(msg));
+  if (!jsonMode) console.error(yellow(msg));
 }
 
 function error(msg: string): never {
@@ -98,7 +93,7 @@ function error(msg: string): never {
     }));
     Deno.exit(0);
   }
-  console.error(color.red(`Error: ${msg}`));
+  console.error(red(`Error: ${msg}`));
   Deno.exit(1);
 }
 
@@ -182,38 +177,14 @@ async function agentSend(message: string): Promise<Record<string, unknown>> {
   }
 }
 
-function fileExists(path: string): boolean {
-  try {
-    Deno.statSync(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function socketExists(path: string): boolean {
-  try {
-    const stat = Deno.statSync(path);
-    // Deno doesn't expose isSocket, but if stat succeeds on a socket path it exists
-    return stat !== undefined;
-  } catch {
-    return false;
-  }
-}
-
-function basename(path: string): string {
-  const parts = path.split("/");
-  return parts[parts.length - 1] ?? path;
-}
-
 // --- Config ---
 
 function resolveHostsFile(): { path: string; isLegacy: boolean } {
   const canonical = `${OA_CONFIG_DIR}/remote-hosts`;
-  if (fileExists(canonical)) return { path: canonical, isLegacy: false };
+  if (existsSync(canonical)) return { path: canonical, isLegacy: false };
 
   const legacy = `${LEGACY_CONFIG_DIR}/hosts`;
-  if (fileExists(legacy)) {
+  if (existsSync(legacy)) {
     warn(`Using legacy config at ${legacy} — move to ${canonical}`);
     return { path: legacy, isLegacy: true };
   }
@@ -226,7 +197,7 @@ function loadHosts(hostFilter: string | null): HostEntry[] {
 
   let hosts: HostEntry[] = [];
 
-  if (fileExists(hostsPath)) {
+  if (existsSync(hostsPath)) {
     const text = Deno.readTextFileSync(hostsPath);
     for (const line of text.split("\n")) {
       const trimmed = line.trim();
@@ -238,7 +209,7 @@ function loadHosts(hostFilter: string | null): HostEntry[] {
   } else {
     // Try legacy single-host config
     const legacyConfig = `${LEGACY_CONFIG_DIR}/config`;
-    if (fileExists(legacyConfig)) {
+    if (existsSync(legacyConfig)) {
       const text = Deno.readTextFileSync(legacyConfig);
       let host = "workmbp";
       let dir = "";
@@ -566,7 +537,7 @@ async function cmdList(opts: Opts, isJson: boolean, query: string): Promise<void
   for (const p of projects) {
     if (p.label !== currentLabel) {
       if (currentLabel) console.log();
-      console.log(color.green(`${p.label}`) + ` (${p.host})`);
+      console.log(green(`${p.label}`) + ` (${p.host})`);
       currentLabel = p.label;
     }
     if (p.projectPath === p.baseDir) {
@@ -623,7 +594,7 @@ async function cmdDefault(opts: Opts): Promise<void> {
   const projectDisplay = basename(path);
 
   const actions = ["tmux", "code"];
-  if (socketExists(AGENT_SOCK)) actions.push("finder");
+  if (existsSync(AGENT_SOCK)) actions.push("finder");
 
   const action = await fzfSelectSimple(actions, {
     prompt: "Action: ",
@@ -921,6 +892,6 @@ main().catch((err: unknown) => {
     }));
     Deno.exit(0);
   }
-  console.error(color.red(`Error: ${msg}`));
+  console.error(red(`Error: ${msg}`));
   Deno.exit(1);
 });
