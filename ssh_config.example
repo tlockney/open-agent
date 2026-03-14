@@ -1,6 +1,10 @@
 # open-agent: SSH config additions
 # Add to ~/.ssh/config on your LOCAL (personal) machine.
-# Adjust "Host work" to match your SSH host alias.
+#
+# Each remote machine needs its own Host block with a unique alias.
+# The RemoteForward in each block tunnels the local agent socket
+# to the same path on that remote, so the hook and remote scripts
+# can reach the daemon regardless of which machine you're on.
 
 Host work
     # Forward the agent socket to the remote machine.
@@ -12,5 +16,15 @@ Host work
     StreamLocalBindUnlink yes
 
     # Optional: keep connections alive to reduce SSHFS mount disruptions
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+
+# Example: a second remote machine. The Host alias ("work2") must be
+# unique and must match the OPEN_AGENT_HOST value set on that remote
+# (see open-agent-hook.sh). The daemon uses this alias as a key to
+# track mounts independently per remote.
+Host work2
+    RemoteForward /tmp/open-agent.sock /Users/YOURUSER/.local/share/open-agent/open-agent.sock
+    StreamLocalBindUnlink yes
     ServerAliveInterval 30
     ServerAliveCountMax 3

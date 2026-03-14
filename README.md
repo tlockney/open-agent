@@ -55,31 +55,69 @@ flowchart LR
 
 ## Install
 
+**Quick install (downloads latest release):**
+
 ```bash
-git clone <this-repo>
+curl -fsSL https://raw.githubusercontent.com/tlockney/open-agent/main/install.sh | bash
+```
+
+**From a local clone:**
+
+```bash
+git clone https://github.com/tlockney/open-agent.git
 cd open-agent
-./install.sh
+./install.sh --local
 ```
 
 The install script:
 
-- Checks prerequisites (deno, sshfs, socat)
+- Checks prerequisites (deno, sshfs, socat, terminal-notifier)
 - Copies `agent.ts` to `~/.local/share/open-agent/`
+- Copies all scripts to `~/.local/bin/`
 - Installs and starts a launchd service
-- Prints SSH config to add (`RemoteForward` + `StreamLocalBindUnlink`)
+- Migrates config from legacy `~/.config/rproj/` if present
+- Prints SSH config to add
 
-Remote-side scripts (`ropen`, `open-agent-hook.sh`) are deployed separately via [yadm](https://yadm.io/) dotfiles. See the repo layout below.
+After install, deploy scripts to remote hosts:
+
+```bash
+open-agent setup-remote all
+```
 
 ## Repo layout
 
 ```
-open-agent/              ← this repo (agent daemon + install infrastructure)
-  agent.ts               — the Deno daemon
-  com.open-agent.daemon.plist — launchd service template
-  install.sh             — local install script
-  ssh_config.example     — SSH config additions
-  ropen                  — remote open wrapper (canonical copy; deployed via yadm)
-  open-agent-hook.sh     — shell session hook (canonical copy; deployed via yadm)
+open-agent/
+  bin/
+    open-agent           CLI (setup-remote, update, status)
+    ropen                Remote open wrapper
+    rcode                VS Code remote-ssh wrapper
+    rcopy                Copy stdin to local clipboard
+    rpaste               Paste from local clipboard
+    rnotify              Send local macOS notification
+    rop                  1Password CLI proxy
+    rpush                Push file to local machine
+    rpull                Pull file from local machine
+    rproj                Unified project management tool
+    rtmux                tmux session wrapper
+    lib/
+      open-agent.sh      Shared library (socket communication)
+  agent.ts               Deno daemon
+  com.open-agent.daemon.plist   launchd service template
+  install.sh             Installer (curl|sh + --local mode)
+  open-agent-hook.sh     Shell session hook (deployed to remotes)
+  ssh_config.example     SSH config additions
+```
+
+## CLI
+
+```bash
+# Manage the toolkit
+open-agent setup-remote workmbp   # Deploy scripts to a single remote
+open-agent setup-remote all       # Deploy to all configured hosts
+open-agent status                 # Check daemon status
+open-agent update                 # Update to latest GitHub release
+open-agent version                # Print version
 ```
 
 ## Usage
@@ -101,9 +139,6 @@ ropen https://example.com
 
 # Works as 'open' alias (set up by the shell hook)
 open ~/docs/report.md
-
-# Check agent status
-oa-status
 
 # Clipboard bridge
 echo "hello" | rcopy        # copy to local clipboard
@@ -140,14 +175,32 @@ rproj s
 
 ## Configuration
 
-Environment variables (set on the remote machine):
+**Hosts file:** `~/.config/open-agent/remote-hosts`
+
+Format (pipe-delimited, one entry per line):
+
+```
+host_alias|project_directory|label
+```
+
+Example:
+
+```
+workmbp|/Users/you/src/projects|Work Projects
+workmbp|/Users/you/src/infra|Infrastructure
+devbox|/home/you/code|Dev Box
+```
+
+Legacy config at `~/.config/rproj/hosts` is auto-detected with a warning.
+
+**Environment variables (set on the remote machine):**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OPEN_AGENT_HOST` | `workmbp` | SSH config Host alias for the remote machine |
 | `OPEN_AGENT_SOCK` | `/tmp/open-agent.sock` | Path to the forwarded socket |
 
-Agent constants (in `agent.ts`):
+**Agent constants (in `agent.ts`):**
 
 | Constant | Default | Description |
 |----------|---------|-------------|

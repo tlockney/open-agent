@@ -7,6 +7,9 @@
 [[ -z "$SSH_CONNECTION" ]] && return 0
 
 _OA_SOCK="${OPEN_AGENT_SOCK:-/tmp/open-agent.sock}"
+# OPEN_AGENT_HOST must be unique per remote and must match the SSH Host
+# alias used in ssh_config on the local machine. The daemon uses this
+# value as a key to track mounts independently for each remote.
 _OA_HOST="${OPEN_AGENT_HOST:-work}"
 _OA_SID="$$-$(date +%s)"
 
