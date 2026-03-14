@@ -3,7 +3,7 @@
 // open-agent: local daemon that receives open requests from remote machines
 // via a forwarded Unix socket, manages SSHFS mounts, and opens files locally.
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 const HOME = Deno.env.get("HOME");
 if (!HOME) {
@@ -296,9 +296,20 @@ function scheduleUnmount(host: string): void {
 
 // --- Path translation ---
 
+function normalizePath(p: string): string {
+  const parts: string[] = [];
+  for (const seg of p.split("/")) {
+    if (seg === "..") parts.pop();
+    else if (seg !== "." && seg !== "") parts.push(seg);
+  }
+  return "/" + parts.join("/");
+}
+
 function translatePath(remotePath: string, state: MountState): string {
-  if (remotePath.startsWith(state.remoteHome)) {
-    const relative = remotePath.slice(state.remoteHome.length);
+  const normalized = normalizePath(remotePath);
+  const normalizedHome = normalizePath(state.remoteHome);
+  if (normalized === normalizedHome || normalized.startsWith(normalizedHome + "/")) {
+    const relative = normalized.slice(normalizedHome.length);
     return state.mountPoint + relative;
   }
   throw new Error(

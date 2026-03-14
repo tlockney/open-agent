@@ -156,6 +156,13 @@ async function exec(cmd: string, args: string[]): Promise<never> {
   Deno.exit(code);
 }
 
+// Escape a string for safe use inside single quotes in shell commands.
+// Handles the only dangerous character: single quote itself.
+// 'foo'bar' → 'foo'\''bar'
+function shellQuote(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
 async function agentSend(message: string): Promise<Record<string, unknown>> {
   let conn: Deno.UnixConn;
   try {
@@ -263,7 +270,7 @@ function loadHosts(hostFilter: string | null): HostEntry[] {
 async function sshTestDir(host: string, path: string): Promise<boolean> {
   const result = await run("ssh", [
     "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
-    host, `test -d '${path}'`,
+    host, `test -d ${shellQuote(path)}`,
   ], { timeout: SSH_TIMEOUT_MS });
   return result.success;
 }
@@ -271,7 +278,7 @@ async function sshTestDir(host: string, path: string): Promise<boolean> {
 async function sshListDirs(host: string, dir: string): Promise<string[]> {
   const result = await run("ssh", [
     "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
-    host, `find '${dir}' -maxdepth 1 -mindepth 1 -type d -not -name '.*' | sort`,
+    host, `find ${shellQuote(dir)} -maxdepth 1 -mindepth 1 -type d -not -name '.*' | sort`,
   ], { timeout: SSH_TIMEOUT_MS });
   if (!result.success) return [];
   return result.stdout.split("\n").filter(Boolean);
@@ -575,7 +582,7 @@ async function cmdTmux(opts: Opts): Promise<void> {
   const { host, path } = await getProjectSelection(hosts, opts);
   const sessionName = basename(path);
   success(`Opening tmux session '${sessionName}' at ${path} on ${host}...`);
-  await exec("ssh", ["-A", "-t", host, `cd '${path}' && ~/bin/tc`]);
+  await exec("ssh", ["-A", "-t", host, `cd ${shellQuote(path)} && ~/bin/tc`]);
 }
 
 async function cmdCode(opts: Opts): Promise<void> {
@@ -628,7 +635,7 @@ async function cmdDefault(opts: Opts): Promise<void> {
     case "tmux": {
       const sessionName = basename(path);
       success(`Opening tmux session '${sessionName}' at ${path}...`);
-      await exec("ssh", ["-A", "-t", host, `cd '${path}' && ~/bin/tc`]);
+      await exec("ssh", ["-A", "-t", host, `cd ${shellQuote(path)} && ~/bin/tc`]);
       break;
     }
     case "code":
@@ -711,40 +718,31 @@ async function cmdOpen(arg: string): Promise<void> {
   await exec("code", ["--remote", `ssh-remote+${host}`, path]);
 }
 
-async function cmdPreviewMulti(meta: string): Promise<void> {
-  const [host, ...pathParts] = meta.split("|");
-  const path = pathParts.join("|");
-
+async function sshPreview(host: string, path: string): Promise<void> {
+  const p = shellQuote(path);
   const result = await run("ssh", [
     "-o", "ConnectTimeout=2", host,
-    `echo '${path}'; echo; ` +
-    `if git -C '${path}' rev-parse --git-dir >/dev/null 2>&1; then ` +
-    `echo 'Branch:'; git -C '${path}' branch --show-current 2>/dev/null; echo; ` +
-    `echo 'Recent commits:'; git -C '${path}' log --oneline -5 2>/dev/null; echo; fi; ` +
-    `echo 'Contents:'; ls -1 '${path}' 2>/dev/null | head -20`,
+    `echo ${p}; echo; ` +
+    `if git -C ${p} rev-parse --git-dir >/dev/null 2>&1; then ` +
+    `echo 'Branch:'; git -C ${p} branch --show-current 2>/dev/null; echo; ` +
+    `echo 'Recent commits:'; git -C ${p} log --oneline -5 2>/dev/null; echo; fi; ` +
+    `echo 'Contents:'; ls -1 ${p} 2>/dev/null | head -20`,
   ], { timeout: SSH_TIMEOUT_MS });
   if (result.stdout) console.log(result.stdout);
 }
 
-async function cmdPreview(host: string, dir: string, item: string): Promise<void> {
-  let path: string;
-  if (item.startsWith("\u{1F4C2}")) {
-    path = dir;
-  } else {
-    // Strip tree-drawing prefix
-    const stripped = item.replace(/^\s*[├└]── /, "");
-    path = `${dir}/${stripped}`;
-  }
+async function cmdPreviewMulti(meta: string): Promise<void> {
+  const [host, ...pathParts] = meta.split("|");
+  await sshPreview(host, pathParts.join("|"));
+}
 
-  const result = await run("ssh", [
-    "-o", "ConnectTimeout=2", host,
-    `echo '${path}'; echo; ` +
-    `if git -C '${path}' rev-parse --git-dir >/dev/null 2>&1; then ` +
-    `echo 'Branch:'; git -C '${path}' branch --show-current 2>/dev/null; echo; ` +
-    `echo 'Recent commits:'; git -C '${path}' log --oneline -5 2>/dev/null; echo; fi; ` +
-    `echo 'Contents:'; ls -1 '${path}' 2>/dev/null | head -20`,
-  ], { timeout: SSH_TIMEOUT_MS });
-  if (result.stdout) console.log(result.stdout);
+async function cmdPreview(host: string, dir: string, item: string): Promise<void> {
+  if (item.startsWith("\u{1F4C2}")) {
+    await sshPreview(host, dir);
+  } else {
+    const stripped = item.replace(/^\s*[├└]── /, "");
+    await sshPreview(host, `${dir}/${stripped}`);
+  }
 }
 
 // --- Help ---
