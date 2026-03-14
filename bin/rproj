@@ -450,16 +450,28 @@ async function resolveProjectAcrossHosts(
   hosts: HostEntry[],
   projectName: string,
 ): Promise<ProjectMatch> {
-  // Probe all host/dir combos in parallel
-  const probes = hosts.map(async (entry) => {
+  // Check parent directory basename matches first (no SSH needed)
+  const parentMatches: ProjectMatch[] = [];
+  const remaining: HostEntry[] = [];
+  for (const entry of hosts) {
+    if (basename(entry.dir) === projectName) {
+      parentMatches.push({ host: entry.alias, path: entry.dir });
+    } else {
+      remaining.push(entry);
+    }
+  }
+
+  // Probe remaining host/dir combos as subdirectories in parallel
+  const probes = remaining.map(async (entry) => {
     const candidate = `${entry.dir}/${projectName}`;
     return (await sshTestDir(entry.alias, candidate))
       ? { host: entry.alias, path: candidate }
       : null;
   });
-  const matches = (await Promise.all(probes)).filter(
+  const subMatches = (await Promise.all(probes)).filter(
     (m): m is ProjectMatch => m !== null,
   );
+  const matches = [...parentMatches, ...subMatches];
 
   if (matches.length === 0) {
     error(`Project '${projectName}' not found on any configured host`);
