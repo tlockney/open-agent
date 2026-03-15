@@ -187,15 +187,18 @@ async function cmdSetupRemote(target: string): Promise<void> {
     const deployResult = await run("ssh", [
       host,
       "set -e; cd $(mktemp -d); tar xzf -; " +
-      "cp bin/* ~/.local/bin/; cp bin/lib/* ~/.local/bin/lib/; " +
+      "find bin -maxdepth 1 -type f -exec cp {} ~/.local/bin/ \\;; " +
+      "cp bin/lib/* ~/.local/bin/lib/; " +
       "cp open-agent-hook.sh ~/.local/share/open-agent/; " +
-      "chmod +x ~/.local/bin/r*",
+      "chmod +x ~/.local/bin/ropen ~/.local/bin/rcode ~/.local/bin/rcopy ~/.local/bin/rpaste " +
+      "~/.local/bin/rnotify ~/.local/bin/rop ~/.local/bin/rpush ~/.local/bin/rpull",
     ], { stdin: "piped", input: tarballBytes });
 
     if (deployResult.success) {
       info(`${host}: deployed successfully`);
     } else {
       warn(`${host}: deployment failed`);
+      if (deployResult.stderr) console.error(`  ${deployResult.stderr}`);
       failed++;
     }
   }
