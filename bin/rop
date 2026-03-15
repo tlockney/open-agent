@@ -1,16 +1,12 @@
-#!/bin/bash
-# rop - proxy 1Password CLI operations through open-agent to the local machine
-# Usage: rop read "op://vault/item/field"
-#        rop run --env-file .env -- command args...
-#        rop run -- command args...
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env
+// rop - proxy 1Password CLI operations through open-agent to the local machine
+// Usage: rop read "op://vault/item/field"
+//        rop run --env-file .env -- command args...
+//        rop run -- command args...
 
-set -euo pipefail
+import { send, requireSock, checkResponse, getStringField, fail } from "./lib/oa.ts";
 
-source "$(dirname "$0")/lib/oa-remote.sh"
-
-usage() {
-    cat <<'EOF'
-Usage: rop <subcommand> [options]
+const USAGE = `Usage: rop <subcommand> [options]
 
 Proxy 1Password operations to your local machine where the GUI is accessible.
 
@@ -22,151 +18,141 @@ Examples:
   rop read "op://dev/database/url"
   rop run -- make deploy
   rop run --env-file .env -- terraform apply
-  rop run --env-file .env --env-file .env.local -- make test
-EOF
-    exit 0
+  rop run --env-file .env --env-file .env.local -- make test`;
+
+if (Deno.args.length === 0) { console.log(USAGE); Deno.exit(0); }
+
+const subcmd = Deno.args[0];
+
+if (subcmd !== "-h" && subcmd !== "--help" && subcmd !== "help") {
+  requireSock();
+}
+const rest = Deno.args.slice(1);
+
+switch (subcmd) {
+  case "read":
+    await cmdRead(rest);
+    break;
+  case "run":
+    await cmdRun(rest);
+    break;
+  case "-h":
+  case "--help":
+  case "help":
+    console.log(USAGE);
+    break;
+  default:
+    fail(`unknown subcommand: ${subcmd}. See rop --help`);
 }
 
-die() { echo "rop: $1" >&2; exit 1; }
+// --- Subcommand: read ---
 
-[[ $# -eq 0 ]] && usage
+async function cmdRead(args: string[]): Promise<void> {
+  if (args.length === 0) fail("read requires an op:// reference");
+  const ref = args[0];
+  if (!ref.startsWith("op://")) fail("reference must start with op://");
 
-oa_init
-oa_require_sock
-
-# --- Subcommand: read ---
-
-cmd_read() {
-    [[ $# -eq 0 ]] && die "read requires an op:// reference"
-    local ref="$1"
-    [[ "$ref" == op://* ]] || die "reference must start with op://"
-
-    local msg="{\"action\":\"op-read\",\"ref\":$(oa_json_escape "$ref")}"
-    local response
-    response=$(oa_send "$msg" 30) || die "failed to connect to agent"
-
-    if oa_check_response "$response" 2>/dev/null; then
-        # Extract value — may contain special characters, use python3
-        echo "$response" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.stdout.write(d.get("value",""))'
-    else
-        die "$(oa_json_value "$response" "error")"
-    fi
+  const response = await send({ action: "op-read", ref }, 30);
+  checkResponse(response);
+  const value = getStringField(response, "value");
+  await Deno.stdout.write(new TextEncoder().encode(value));
 }
 
-# --- Subcommand: run ---
+// --- Subcommand: run ---
 
-cmd_run() {
-    local -a env_files=()
-    local -a cmd_args=()
-    local found_separator=false
+async function cmdRun(args: string[]): Promise<void> {
+  const envFiles: string[] = [];
+  let cmdArgs: string[] = [];
+  let foundSeparator = false;
 
-    # Parse arguments
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --env-file)
-                [[ $# -lt 2 ]] && die "--env-file requires a filename"
-                env_files+=("$2")
-                shift 2
-                ;;
-            --)
-                found_separator=true
-                shift
-                break
-                ;;
-            *)
-                die "unexpected argument before --: $1"
-                ;;
-        esac
-    done
+  // Parse arguments
+  let i = 0;
+  while (i < args.length) {
+    if (args[i] === "--env-file") {
+      i++;
+      if (i >= args.length) fail("--env-file requires a filename");
+      envFiles.push(args[i]);
+    } else if (args[i] === "--") {
+      foundSeparator = true;
+      cmdArgs = args.slice(i + 1);
+      break;
+    } else {
+      fail(`unexpected argument before --: ${args[i]}`);
+    }
+    i++;
+  }
 
-    $found_separator || die "missing -- separator before command"
-    [[ $# -eq 0 ]] && die "no command specified after --"
-    cmd_args=("$@")
+  if (!foundSeparator) fail("missing -- separator before command");
+  if (cmdArgs.length === 0) fail("no command specified after --");
 
-    # Collect op:// references from env files and current environment
-    # Use parallel arrays for Bash 3.x compatibility (no associative arrays)
-    local -a ref_keys=()
-    local -a ref_vals=()
+  // Collect op:// references from env files
+  const refs: Record<string, string> = {};
+  const envVars: Record<string, string> = {};
 
-    # Scan env files (length check guards against Bash 3.x unbound empty array)
-    for file in ${env_files+"${env_files[@]}"}; do
-        [[ -f "$file" ]] || die "env file not found: $file"
-        while IFS= read -r line; do
-            # Skip comments and empty lines
-            [[ -z "$line" || "$line" == \#* ]] && continue
-            # Extract KEY=VALUE, handle optional quotes
-            if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=[[:space:]]*(.*) ]]; then
-                local key="${BASH_REMATCH[1]}"
-                local val="${BASH_REMATCH[2]}"
-                # Strip surrounding quotes
-                val="${val%\"}"
-                val="${val#\"}"
-                val="${val%\'}"
-                val="${val#\'}"
-                if [[ "$val" == op://* ]]; then
-                    ref_keys+=("$key")
-                    ref_vals+=("$val")
-                else
-                    # Non-op:// values — export directly
-                    export "$key=$val"
-                fi
-            fi
-        done < "$file"
-    done
+  for (const file of envFiles) {
+    let text: string;
+    try {
+      text = Deno.readTextFileSync(file);
+    } catch {
+      fail(`env file not found: ${file}`);
+    }
+    for (const line of text.split("\n")) {
+      if (!line.trim() || line.trim().startsWith("#")) continue;
+      const match = line.match(/^([A-Za-z_]\w*)=\s*(.*)/);
+      if (!match) continue;
+      const key = match[1];
+      let val = match[2];
+      // Strip surrounding quotes
+      val = val.replace(/^["']|["']$/g, "");
+      if (val.startsWith("op://")) {
+        refs[key] = val;
+      } else {
+        envVars[key] = val;
+      }
+    }
+  }
 
-    # Also scan current environment for op:// values
-    while IFS='=' read -r key val; do
-        if [[ "$val" == op://* ]]; then
-            ref_keys+=("$key")
-            ref_vals+=("$val")
-        fi
-    done < <(env)
+  // Also scan current environment for op:// values
+  for (const [key, val] of Object.entries(Deno.env.toObject())) {
+    if (val.startsWith("op://")) {
+      refs[key] = val;
+    }
+  }
 
-    # If no op:// refs found, just run the command
-    if [[ ${#ref_keys[@]} -eq 0 ]]; then
-        exec "${cmd_args[@]}"
-    fi
+  // If no op:// refs found, just run the command
+  if (Object.keys(refs).length === 0) {
+    // Set non-op env vars and exec
+    for (const [k, v] of Object.entries(envVars)) {
+      Deno.env.set(k, v);
+    }
+    const { code } = await new Deno.Command(cmdArgs[0], {
+      args: cmdArgs.slice(1),
+      stdin: "inherit", stdout: "inherit", stderr: "inherit",
+      env: Deno.env.toObject(),
+    }).output();
+    Deno.exit(code);
+  }
 
-    # Build the resolve request
-    local refs_json="{"
-    local first=true
-    local i
-    for (( i=0; i<${#ref_keys[@]}; i++ )); do
-        $first || refs_json="$refs_json,"
-        first=false
-        refs_json="$refs_json$(oa_json_escape "${ref_keys[$i]}"):$(oa_json_escape "${ref_vals[$i]}")"
-    done
-    refs_json="$refs_json}"
+  // Resolve op:// references via the agent
+  const response = await send({ action: "op-resolve", refs }, 30);
+  checkResponse(response);
 
-    local msg="{\"action\":\"op-resolve\",\"refs\":${refs_json}}"
-    local response
-    response=$(oa_send "$msg" 30) || die "failed to connect to agent"
+  const resolved = response.resolved as Record<string, string> | undefined ?? {};
 
-    if ! oa_check_response "$response" 2>/dev/null; then
-        die "$(oa_json_value "$response" "error")"
-    fi
+  // Build environment with resolved values
+  const finalEnv = Deno.env.toObject();
+  for (const [k, v] of Object.entries(envVars)) {
+    finalEnv[k] = v;
+  }
+  for (const [k, v] of Object.entries(resolved)) {
+    finalEnv[k] = v;
+  }
 
-    # Parse resolved values and export them
-    # Use python3 for reliable JSON parsing of potentially complex values
-    eval "$(echo "$response" | python3 -c '
-import json, sys, shlex
-d = json.load(sys.stdin)
-for key, val in d.get("resolved", {}).items():
-    print(f"export {key}={shlex.quote(val)}")
-')"
-
-    # Run the command with resolved environment
-    exec "${cmd_args[@]}"
+  // Run the command
+  const { code } = await new Deno.Command(cmdArgs[0], {
+    args: cmdArgs.slice(1),
+    stdin: "inherit", stdout: "inherit", stderr: "inherit",
+    env: finalEnv,
+  }).output();
+  Deno.exit(code);
 }
-
-# --- Main ---
-
-subcmd="$1"
-shift
-
-case "$subcmd" in
-    read) cmd_read "$@" ;;
-    run) cmd_run "$@" ;;
-    -h|--help|help) usage ;;
-    *) die "unknown subcommand: $subcmd. See rop --help" ;;
-esac

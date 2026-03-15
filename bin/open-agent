@@ -156,7 +156,7 @@ async function cmdSetupRemote(target: string): Promise<void> {
       await Deno.copyFile(src, `${tmpDir}/bin/${script}`);
     }
   }
-  await Deno.copyFile(`${SCRIPT_DIR}/lib/oa-remote.sh`, `${tmpDir}/bin/lib/oa-remote.sh`);
+  await Deno.copyFile(`${SCRIPT_DIR}/lib/oa.ts`, `${tmpDir}/bin/lib/oa.ts`);
   await Deno.copyFile(hookPath, `${tmpDir}/open-agent-hook.sh`);
 
   // Create tarball
@@ -189,7 +189,7 @@ async function cmdSetupRemote(target: string): Promise<void> {
       "set -e; cd $(mktemp -d); tar xzf -; " +
       "cp bin/* ~/.local/bin/; cp bin/lib/* ~/.local/bin/lib/; " +
       "cp open-agent-hook.sh ~/.local/share/open-agent/; " +
-      "chmod +x ~/.local/bin/r* ~/.local/bin/lib/oa-remote.sh",
+      "chmod +x ~/.local/bin/r*",
     ], { stdin: "piped", input: tarballBytes });
 
     if (deployResult.success) {

@@ -44,8 +44,8 @@ graph LR
 
 ### Remote Hosts
 
-- **socat** or **nc** — at least one must be available (`brew install socat` or `apt install socat`)
-- **python3** — required by `rpaste` and `rop` for JSON parsing
+- **Deno** — `brew install deno` or see [deno.land](https://deno.land/) (all r* scripts are TypeScript)
+- **socat** or **nc** — needed by the shell hook for session registration (`brew install socat` or `apt install socat`)
 - **tmux** — for `rproj tmux` / `rtmux`
 
 ## Setup
@@ -165,7 +165,7 @@ open-agent setup-remote workmbp
 open-agent setup-remote all
 ```
 
-This creates a tarball of the `r*` scripts, `lib/oa-remote.sh`, and `open-agent-hook.sh`, then pipes it via SSH to each host. Scripts are installed to `~/.local/bin/` and the hook to `~/.local/share/open-agent/`.
+This creates a tarball of the `r*` scripts, `lib/oa.ts`, and `open-agent-hook.sh`, then pipes it via SSH to each host. Scripts are installed to `~/.local/bin/` and the hook to `~/.local/share/open-agent/`.
 
 Ensure `~/.local/bin` is in `PATH` on each remote:
 
@@ -332,7 +332,7 @@ open-agent version                  # Print version
 
 Reads `~/.config/open-agent/remote-hosts`, extracts unique host aliases, and deploys:
 
-- All `r*` scripts and `lib/oa-remote.sh` → `~/.local/bin/` on each remote
+- All `r*` scripts and `lib/oa.ts` → `~/.local/bin/` on each remote
 - `open-agent-hook.sh` → `~/.local/share/open-agent/` on each remote
 
 Validates SSH connectivity before deploying. Prints post-deploy instructions for PATH and hook sourcing.
@@ -486,7 +486,7 @@ When using `-p` with multiple hosts configured, `--host` is required to disambig
 | `~/.local/share/open-agent/launchd-stderr.log` | Launchd stderr |
 | `~/.local/bin/r*` | Remote command scripts |
 | `~/.local/bin/open-agent` | CLI tool |
-| `~/.local/bin/lib/oa-remote.sh` | Shared library |
+| `~/.local/bin/lib/oa.ts` | Shared library (socket communication) |
 | `~/.remote-mounts/<host>/` | SSHFS mount points |
 | `~/Library/LaunchAgents/com.open-agent.daemon.plist` | Launchd service |
 

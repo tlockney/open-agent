@@ -1,22 +1,14 @@
-#!/bin/bash
-# rpaste - paste from the local machine's clipboard via open-agent
-# Usage: rpaste
-#        rpaste | vim -
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-env
+// rpaste - paste from the local machine's clipboard via open-agent
+// Usage: rpaste
+//        rpaste | vim -
 
-set -euo pipefail
+import { send, requireSock, checkResponse, getStringField } from "./lib/oa.ts";
 
-source "$(dirname "$0")/lib/oa-remote.sh"
-oa_init
-oa_require_sock
+requireSock();
 
-RESPONSE=$(oa_send '{"action":"paste"}') || {
-    echo "${OA_SCRIPT_NAME}: failed to connect to agent" >&2
-    exit 1
-}
+const response = await send({ action: "paste" });
+checkResponse(response);
 
-if oa_check_response "$RESPONSE"; then
-    # Extract the content field — handles embedded \n, \t etc. from JSON
-    echo "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.stdout.write(d.get("content",""))'
-else
-    exit 1
-fi
+const content = getStringField(response, "content");
+if (content) await Deno.stdout.write(new TextEncoder().encode(content));

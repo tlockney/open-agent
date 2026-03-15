@@ -1,12 +1,27 @@
-#!/usr/bin/env bash
-# rcode - open a project in VS Code via remote-ssh
-#
-# Local: delegates to rproj code (interactive project selection)
-# Remote (SSH session): sends open-vscode action through the agent socket
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env
+// rcode - open a project in VS Code via remote-ssh
+//
+// Local: delegates to rproj code (interactive project selection)
+// Remote (SSH session): sends open-vscode action through the agent socket
 
-if [[ -n "$SSH_CONNECTION" ]]; then
-    # On the remote machine — use the agent socket like ropen -v
-    exec "$(dirname "$0")/ropen" -v "${1:-.}"
-else
-    exec "$(dirname "$0")/rproj" code "$@"
-fi
+import { dirname } from "jsr:@std/path@1/dirname";
+import { fromFileUrl } from "jsr:@std/path@1/from-file-url";
+
+const scriptDir = dirname(fromFileUrl(import.meta.url));
+const target = Deno.args[0] ?? ".";
+
+if (Deno.env.get("SSH_CONNECTION")) {
+  // On the remote — use ropen -v
+  const { code } = await new Deno.Command(`${scriptDir}/ropen`, {
+    args: ["-v", target],
+    stdin: "inherit", stdout: "inherit", stderr: "inherit",
+  }).output();
+  Deno.exit(code);
+} else {
+  // On the local Mac — delegate to rproj code
+  const { code } = await new Deno.Command(`${scriptDir}/rproj`, {
+    args: ["code", ...Deno.args],
+    stdin: "inherit", stdout: "inherit", stderr: "inherit",
+  }).output();
+  Deno.exit(code);
+}

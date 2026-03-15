@@ -126,8 +126,8 @@ info "bin scripts → $BIN_DIR/"
 
 # --- Copy lib ---
 
-cp "$SCRIPT_DIR/bin/lib/oa-remote.sh" "$BIN_DIR/lib/oa-remote.sh"
-info "lib/oa-remote.sh → $BIN_DIR/lib/"
+cp "$SCRIPT_DIR/bin/lib/oa.ts" "$BIN_DIR/lib/oa.ts"
+info "lib/oa.ts → $BIN_DIR/lib/"
 
 # --- Copy hook ---
 

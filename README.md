@@ -51,7 +51,8 @@ flowchart LR
 
 **Remote (work) machine:**
 
-- socat or netcat with Unix socket support
+- [Deno](https://deno.land/) runtime
+- socat or netcat with Unix socket support (for the shell hook)
 
 ## Install
 
@@ -101,7 +102,7 @@ open-agent/
     rproj                Unified project management tool
     rtmux                tmux session wrapper
     lib/
-      oa-remote.sh       Shared library for remote r* scripts
+      oa.ts              Shared library (socket communication)
   open-agent-daemon.ts   Deno daemon
   com.open-agent.daemon.plist   launchd service template
   install.sh             Installer (curl|sh + --local mode)

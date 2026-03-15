@@ -1,17 +1,12 @@
-#!/bin/bash
-# rpush - push a remote file to the local machine via open-agent
-# Usage: rpush file.txt              # copies to local ~/Downloads
-#        rpush -d ~/Desktop file.txt # copies to specific local directory
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-env
+// rpush - push a remote file to the local machine via open-agent
+// Usage: rpush file.txt              # copies to local ~/Downloads
+//        rpush -d ~/Desktop file.txt # copies to specific local directory
 
-set -euo pipefail
+import { parseArgs } from "jsr:@std/cli@1/parse-args";
+import { send, requireSock, checkResponse, getStringField, fail, HOST, HOME } from "./lib/oa.ts";
 
-source "$(dirname "$0")/lib/oa-remote.sh"
-
-HOST_ALIAS="${OPEN_AGENT_HOST:-workmbp}"
-
-usage() {
-    cat <<'EOF'
-Usage: rpush [options] <file>
+const USAGE = `Usage: rpush [options] <file>
 
 Push a file from this machine to the local Mac.
 
@@ -21,41 +16,39 @@ Options:
 
 Examples:
   rpush build.tar.gz              # → local ~/Downloads/build.tar.gz
-  rpush -d ~/Desktop report.pdf   # → local ~/Desktop/report.pdf
-EOF
-    exit 0
+  rpush -d ~/Desktop report.pdf   # → local ~/Desktop/report.pdf`;
+
+const args = parseArgs(Deno.args, {
+  string: ["d"],
+  boolean: ["h"],
+});
+
+if (args.h) { console.log(USAGE); Deno.exit(0); }
+
+const positional = args._ as string[];
+if (positional.length === 0) fail("file required. See rpush -h");
+
+requireSock();
+
+let target = String(positional[0]);
+
+// Verify file exists and resolve to absolute path
+try {
+  const stat = Deno.statSync(target);
+  if (!stat) fail(`${target}: no such file`);
+} catch {
+  fail(`${target}: no such file`);
 }
+target = Deno.realPathSync(target);
 
-oa_init
-oa_require_sock
+const msg: Record<string, unknown> = {
+  action: "push",
+  host: HOST,
+  remoteHome: HOME,
+  path: target,
+};
+if (args.d) msg.dest = args.d;
 
-DEST=""
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        -d) DEST="$2"; shift 2 ;;
-        -h|--help) usage ;;
-        --) shift; break ;;
-        -*) echo "rpush: unknown option: $1" >&2; exit 1 ;;
-        *) break ;;
-    esac
-done
-
-[[ $# -eq 0 ]] && { echo "rpush: file required. See rpush -h" >&2; exit 1; }
-TARGET="$1"
-
-[[ -e "$TARGET" ]] || { echo "rpush: $TARGET: no such file" >&2; exit 1; }
-TARGET=$(realpath "$TARGET")
-
-MSG="{\"action\":\"push\",\"host\":$(oa_json_escape "$HOST_ALIAS"),\"remoteHome\":$(oa_json_escape "$HOME"),\"path\":$(oa_json_escape "$TARGET")"
-[[ -n "$DEST" ]] && MSG="$MSG,\"dest\":$(oa_json_escape "$DEST")"
-MSG="$MSG}"
-
-RESPONSE=$(oa_send "$MSG" 30) || {
-    echo "${OA_SCRIPT_NAME}: failed to connect to agent" >&2
-    exit 1
-}
-
-oa_check_response "$RESPONSE" || exit 1
-LOCAL=$(oa_json_value "$RESPONSE" "localPath")
-echo "Pushed to: $LOCAL"
+const response = await send(msg, 30);
+checkResponse(response);
+console.log(`Pushed to: ${getStringField(response, "localPath")}`);
