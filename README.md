@@ -47,7 +47,6 @@ flowchart LR
 - [macFUSE](https://osxfuse.github.io/) + sshfs (`brew install --cask macfuse && brew install gromgit/fuse/sshfs-mac`)
 - [terminal-notifier](https://github.com/julienXX/terminal-notifier) for notifications (`brew install terminal-notifier`)
 - [1Password CLI](https://developer.1password.com/docs/cli/) for `rop` proxy (optional, `brew install --cask 1password-cli`)
-- socat recommended (`brew install socat`), falls back to netcat
 
 **Remote (work) machine:**
 
@@ -72,7 +71,7 @@ cd open-agent
 
 The install script:
 
-- Checks prerequisites (deno, sshfs, socat, terminal-notifier)
+- Checks prerequisites (deno, sshfs, terminal-notifier)
 - Copies `open-agent-daemon.ts` to `~/.local/share/open-agent/`
 - Copies all scripts to `~/.local/bin/`
 - Installs and starts a launchd service

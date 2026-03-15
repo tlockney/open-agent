@@ -91,11 +91,6 @@ else
     brew install gromgit/fuse/sshfs-mac"
 fi
 
-if command -v socat &>/dev/null; then
-    info "socat: $(command -v socat)"
-else
-    warn "socat not found (optional but recommended). Install: brew install socat"
-fi
 
 if command -v terminal-notifier &>/dev/null; then
     info "terminal-notifier: $(command -v terminal-notifier)"

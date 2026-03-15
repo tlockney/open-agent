@@ -37,7 +37,6 @@ graph LR
   brew install --cask macfuse
   brew install gromgit/fuse/sshfs-mac
   ```
-- **socat** (recommended) — `brew install socat` (more reliable than `nc` for Unix sockets)
 - **terminal-notifier** (optional) — `brew install terminal-notifier` (for `rnotify`)
 - **1Password CLI** (optional) — for `rop` 1Password proxy
 - **fzf** — `brew install fzf` (for `rproj` interactive selection)
@@ -68,7 +67,7 @@ cd open-agent
 
 The installer will:
 
-- Check prerequisites (deno, sshfs, socat, terminal-notifier)
+- Check prerequisites (deno, sshfs, terminal-notifier)
 - Copy `open-agent-daemon.ts` to `~/.local/share/open-agent/`
 - Copy all `bin/*` scripts to `~/.local/bin/`
 - Copy `open-agent-hook.sh` to `~/.local/share/open-agent/`
