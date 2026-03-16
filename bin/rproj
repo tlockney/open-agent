@@ -76,6 +76,7 @@ type Command =
 // --- Logging (suppressed in JSON mode) ---
 
 let jsonMode = false;
+let debugMode = false;
 
 function info(msg: string): void {
   if (!jsonMode) console.error(blue(msg));
@@ -85,6 +86,9 @@ function success(msg: string): void {
 }
 function warn(msg: string): void {
   if (!jsonMode) console.error(yellow(msg));
+}
+function debug(msg: string): void {
+  if (debugMode) console.error(yellow(`[debug] ${msg}`));
 }
 
 function error(msg: string): never {
@@ -229,9 +233,12 @@ function loadHosts(hostFilter: string | null): HostEntry[] {
     error(`No hosts file found. Create ${OA_CONFIG_DIR}/remote-hosts with format: host|dir|label`);
   }
 
+  debug(`Loaded ${hosts.length} host entries: ${hosts.map((h) => `${h.alias} (${h.dir})`).join(", ")}`);
+
   if (hostFilter) {
     hosts = hosts.filter((h) => h.alias === hostFilter);
     if (hosts.length === 0) error(`No entries found for host: ${hostFilter}`);
+    debug(`Filtered to host '${hostFilter}': ${hosts.length} entries`);
   }
 
   return hosts;
@@ -248,12 +255,18 @@ async function sshTestDir(host: string, path: string): Promise<boolean> {
 }
 
 async function sshListDirs(host: string, dir: string): Promise<string[]> {
+  debug(`sshListDirs: ${host}:${dir}`);
   const result = await run("ssh", [
     "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
     host, `find ${shellQuote(dir)} -maxdepth 1 -mindepth 1 -type d -not -name '.*' | sort`,
   ], { timeout: SSH_TIMEOUT_MS });
-  if (!result.success) return [];
-  return result.stdout.split("\n").filter(Boolean);
+  if (!result.success) {
+    debug(`sshListDirs FAILED for ${host}:${dir} — code=${result.code}, stderr=${result.stderr}`);
+    return [];
+  }
+  const dirs = result.stdout.split("\n").filter(Boolean);
+  debug(`sshListDirs: ${host}:${dir} → ${dirs.length} dirs found`);
+  return dirs;
 }
 
 async function sshGetHome(host: string): Promise<string> {
@@ -268,8 +281,10 @@ async function sshGetHome(host: string): Promise<string> {
 // --- Project Discovery ---
 
 async function discoverProjects(hosts: HostEntry[]): Promise<ProjectEntry[]> {
+  debug(`Discovering projects across ${hosts.length} host entries`);
   const results = await Promise.all(
     hosts.map(async (entry) => {
+      debug(`Discovering on ${entry.alias} (${entry.label}): ${entry.dir}`);
       const dirs = await sshListDirs(entry.alias, entry.dir);
       const entries: ProjectEntry[] = [
         { host: entry.alias, baseDir: entry.dir, projectPath: entry.dir, label: entry.label },
@@ -277,10 +292,13 @@ async function discoverProjects(hosts: HostEntry[]): Promise<ProjectEntry[]> {
       for (const d of dirs) {
         entries.push({ host: entry.alias, baseDir: entry.dir, projectPath: d, label: entry.label });
       }
+      debug(`${entry.alias} (${entry.label}): ${entries.length} entries (1 parent + ${dirs.length} children)`);
       return entries;
     }),
   );
-  return results.flat();
+  const all = results.flat();
+  debug(`Total discovered: ${all.length} project entries`);
+  return all;
 }
 
 // --- fzf Integration ---
@@ -296,11 +314,11 @@ function buildFzfEntries(projects: ProjectEntry[]): string {
     let childIdx = 0;
     for (const entry of group) {
       if (entry.type === "parent") {
-        lines.push(`${entry.meta}\t${label} > \u{1F4C2} ${entry.name}`);
+        lines.push(`${entry.meta}\t\u{1F4C2} ${label}`);
       } else {
         childIdx++;
         const connector = childIdx === children.length ? "\u2514\u2500\u2500" : "\u251C\u2500\u2500";
-        lines.push(`${entry.meta}\t${label} >   ${connector} ${entry.name}`);
+        lines.push(`${entry.meta}\t   ${connector} ${entry.name}`);
       }
     }
   };
@@ -762,6 +780,11 @@ Examples:
 
 function parseArgs(args: string[]): Command {
   if (args.length === 0) return { cmd: "default", opts: { hostFilter: null, projectName: null } };
+  // Handle bare --debug with no subcommand
+  if (args.length === 1 && args[0] === "--debug") {
+    debugMode = true;
+    return { cmd: "default", opts: { hostFilter: null, projectName: null } };
+  }
 
   const first = args[0];
 
@@ -786,13 +809,15 @@ function parseArgs(args: string[]): Command {
   // Parse flags from remaining args
   const parsed = denoParseArgs(args.slice(1), {
     string: ["host", "p", "q"],
-    boolean: ["json", "help"],
+    boolean: ["json", "help", "debug"],
     alias: { h: "host" },
     unknown: (opt) => {
       if (opt.startsWith("-")) error(`Unknown option: ${opt}`);
       return true;
     },
   });
+
+  if (parsed.debug) debugMode = true;
 
   if (parsed.help) return { cmd: "help" };
 
