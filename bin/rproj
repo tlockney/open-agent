@@ -116,24 +116,27 @@ async function run(
   args: string[],
   opts?: { timeout?: number; stdin?: "inherit" | "null" | "piped"; input?: Uint8Array },
 ): Promise<RunResult> {
+  const signal = opts?.timeout ? AbortSignal.timeout(opts.timeout) : undefined;
   const command = new Deno.Command(cmd, {
     args,
     stdin: opts?.stdin ?? "null",
     stdout: "piped",
     stderr: "piped",
-    signal: opts?.timeout ? AbortSignal.timeout(opts.timeout) : undefined,
   });
   let child: Deno.CommandOutput;
   try {
+    const proc = command.spawn();
+    if (signal) {
+      signal.addEventListener("abort", () => {
+        try { proc.kill("SIGKILL"); } catch { /* already exited */ }
+      }, { once: true });
+    }
     if (opts?.input) {
-      const proc = command.spawn();
       const writer = proc.stdin.getWriter();
       await writer.write(opts.input);
       await writer.close();
-      child = await proc.output();
-    } else {
-      child = await command.output();
     }
+    child = await proc.output();
   } catch {
     return { success: false, stdout: "", stderr: "command timed out or failed", code: 1 };
   }
@@ -246,9 +249,17 @@ function loadHosts(hostFilter: string | null): HostEntry[] {
 
 // --- SSH helpers ---
 
+// Common SSH options for discovery commands: bypass multiplexing so that
+// ConnectTimeout is respected even when a hung ControlMaster exists.
+const SSH_DISCOVERY_OPTS = [
+  "-o", "BatchMode=yes",
+  "-o", "ConnectTimeout=3",
+  "-o", "ControlPath=none",
+];
+
 async function sshTestDir(host: string, path: string): Promise<boolean> {
   const result = await run("ssh", [
-    "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
+    ...SSH_DISCOVERY_OPTS,
     host, `test -d ${shellQuote(path)}`,
   ], { timeout: SSH_TIMEOUT_MS });
   return result.success;
@@ -257,7 +268,7 @@ async function sshTestDir(host: string, path: string): Promise<boolean> {
 async function sshListDirs(host: string, dir: string): Promise<string[]> {
   debug(`sshListDirs: ${host}:${dir}`);
   const result = await run("ssh", [
-    "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
+    ...SSH_DISCOVERY_OPTS,
     host, `find ${shellQuote(dir)} -maxdepth 1 -mindepth 1 -type d -not -name '.*' | sort`,
   ], { timeout: SSH_TIMEOUT_MS });
   if (!result.success) {

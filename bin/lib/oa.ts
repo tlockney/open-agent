@@ -10,7 +10,19 @@ export const HOME = Deno.env.get("HOME") ?? "";
 export const SOCK = Deno.env.get("OPEN_AGENT_SOCK") ?? "/tmp/open-agent.sock";
 export const TCP_HOST = Deno.env.get("OPEN_AGENT_TCP_HOST") ?? "127.0.0.1";
 export const TCP_PORT = parseInt(Deno.env.get("OPEN_AGENT_TCP_PORT") ?? "19876", 10);
-export const HOST = Deno.env.get("OPEN_AGENT_HOST") ?? "workmbp";
+// Resolve host identity: env var → identity file → hostname fallback
+function resolveHost(): string {
+  const envHost = Deno.env.get("OPEN_AGENT_HOST");
+  if (envHost) return envHost;
+
+  const identityPath = `${Deno.env.get("HOME") ?? ""}/.config/open-agent/identity`;
+  try {
+    return Deno.readTextFileSync(identityPath).trim();
+  } catch { /* file doesn't exist */ }
+
+  return "unknown";
+}
+export const HOST = resolveHost();
 export const SCRIPT_NAME = new URL(import.meta.url).pathname.split("/").at(-2) ?? "oa";
 
 export function fail(msg: string): never {

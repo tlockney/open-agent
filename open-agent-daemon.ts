@@ -184,13 +184,16 @@ async function isMountResponsive(mountPoint: string): Promise<boolean> {
 }
 
 function ensureMount(host: string, remoteHome: string): Promise<MountState> {
-  // Serialize per-host so concurrent requests don't spawn parallel sshfs processes
+  // Serialize per-host so concurrent requests don't spawn parallel sshfs processes.
+  // Use .catch() on the chain so a prior failure doesn't block subsequent attempts,
+  // and on the stored promise so rejections don't go unhandled.
   const existing = mountLocks.get(host) ?? Promise.resolve(undefined as unknown as MountState);
-  const next = existing.then(() => doMount(host, remoteHome));
-  mountLocks.set(host, next);
-  // Clean up the lock entry when done (success or failure)
-  next.finally(() => {
-    if (mountLocks.get(host) === next) mountLocks.delete(host);
+  const next = existing.catch(() => undefined as unknown as MountState).then(() => doMount(host, remoteHome));
+  const guarded = next.catch((e: unknown) => { throw e; });
+  mountLocks.set(host, guarded);
+  guarded.catch(() => { /* prevent unhandled rejection on the stored promise */ });
+  guarded.finally(() => {
+    if (mountLocks.get(host) === guarded) mountLocks.delete(host);
   });
   return next;
 }

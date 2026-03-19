@@ -7,10 +7,15 @@
 [[ -z "$SSH_CONNECTION" ]] && return 0
 
 _OA_SOCK="${OPEN_AGENT_SOCK:-/tmp/open-agent.sock}"
-# OPEN_AGENT_HOST must be unique per remote and must match the SSH Host
-# alias used in ssh_config on the local machine. The daemon uses this
-# value as a key to track mounts independently for each remote.
-_OA_HOST="${OPEN_AGENT_HOST:-workmbp}"
+# Resolve host identity: env var → identity file → hostname fallback.
+# Must be unique per remote and match the SSH Host alias on the local machine.
+if [[ -n "${OPEN_AGENT_HOST:-}" ]]; then
+    _OA_HOST="$OPEN_AGENT_HOST"
+elif [[ -f "$HOME/.config/open-agent/identity" ]]; then
+    _OA_HOST="$(cat "$HOME/.config/open-agent/identity" 2>/dev/null)"
+else
+    _OA_HOST="$(hostname -s 2>/dev/null || echo unknown)"
+fi
 _OA_SID="$$-$(date +%s)"
 
 _oa_send() {
