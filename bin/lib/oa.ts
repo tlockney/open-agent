@@ -1,5 +1,5 @@
 // oa.ts — Shared utilities for remote-side scripts that communicate
-// with the open-agent daemon via Unix socket.
+// with the open-agent daemon via Unix socket or TCP fallback.
 //
 // Usage:
 //   import { send, requireSock, fail, SOCK, HOST, HOME } from "./lib/oa.ts";
@@ -8,6 +8,8 @@ import { existsSync } from "jsr:@std/fs@1/exists";
 
 export const HOME = Deno.env.get("HOME") ?? "";
 export const SOCK = Deno.env.get("OPEN_AGENT_SOCK") ?? "/tmp/open-agent.sock";
+export const TCP_HOST = Deno.env.get("OPEN_AGENT_TCP_HOST") ?? "127.0.0.1";
+export const TCP_PORT = parseInt(Deno.env.get("OPEN_AGENT_TCP_PORT") ?? "19876", 10);
 export const HOST = Deno.env.get("OPEN_AGENT_HOST") ?? "workmbp";
 export const SCRIPT_NAME = new URL(import.meta.url).pathname.split("/").at(-2) ?? "oa";
 
@@ -28,7 +30,26 @@ function callerName(): string {
 
 export function requireSock(): void {
   if (!existsSync(SOCK)) {
-    fail(`agent socket not found at ${SOCK}`);
+    // Socket missing — TCP may still work, so just warn
+    console.error(`${callerName()}: socket not found at ${SOCK}, will try TCP ${TCP_HOST}:${TCP_PORT}`);
+  }
+}
+
+async function connectAgent(): Promise<Deno.Conn> {
+  // Try Unix socket first
+  if (existsSync(SOCK)) {
+    try {
+      return await Deno.connect({ transport: "unix", path: SOCK });
+    } catch { /* fall through to TCP */ }
+  }
+
+  // Fall back to TCP
+  try {
+    return await Deno.connect({ hostname: TCP_HOST, port: TCP_PORT });
+  } catch {
+    throw new Error(
+      `failed to connect to agent (tried socket ${SOCK} and TCP ${TCP_HOST}:${TCP_PORT})`
+    );
   }
 }
 
@@ -36,12 +57,7 @@ export async function send(
   message: Record<string, unknown>,
   timeoutSec = 5,
 ): Promise<Record<string, unknown>> {
-  let conn: Deno.UnixConn;
-  try {
-    conn = await Deno.connect({ transport: "unix", path: SOCK });
-  } catch {
-    throw new Error("failed to connect to agent socket");
-  }
+  const conn = await connectAgent();
   try {
     const payload = JSON.stringify(message) + "\n";
     await conn.write(new TextEncoder().encode(payload));

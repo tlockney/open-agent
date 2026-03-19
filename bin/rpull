@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-env
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-env --allow-net=127.0.0.1:19876
 // rpull - pull a file from the local machine to this remote machine via open-agent
 // Usage: rpull ~/Downloads/image.png           # copies to current directory
 //        rpull ~/Desktop/file.txt ~/dest/dir/  # copies to specific remote directory

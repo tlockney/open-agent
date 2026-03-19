@@ -1,11 +1,10 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net=127.0.0.1:19876
 // ropen - remote open wrapper
-// Sends open/vscode requests to the local open-agent via SSH-forwarded Unix socket.
-// Falls back to native open if the agent socket isn't available.
+// Sends open/vscode requests to the local open-agent via Unix socket or TCP.
+// Falls back to native open if the agent is unreachable.
 
-import { existsSync } from "jsr:@std/fs@1/exists";
 import { parseArgs } from "jsr:@std/cli@1/parse-args";
-import { send, fail, SOCK, HOST, HOME } from "./lib/oa.ts";
+import { send, fail, HOST, HOME } from "./lib/oa.ts";
 
 const USAGE = `Usage: ropen [options] <path|url>
 
@@ -59,24 +58,6 @@ if (app.includes("Visual Studio Code") || (app.includes("Code") && !app.includes
   app = "";
 }
 
-// Check socket availability
-if (!existsSync(SOCK)) {
-  console.error(`ropen: agent socket not found at ${SOCK}`);
-  // Fall back to native open if available
-  try {
-    Deno.statSync("/usr/bin/open");
-    console.error("ropen: falling back to native open");
-    const openArgs = app ? ["-a", app, target] : [target];
-    const { code } = await new Deno.Command("/usr/bin/open", {
-      args: openArgs,
-      stdin: "inherit", stdout: "inherit", stderr: "inherit",
-    }).output();
-    Deno.exit(code);
-  } catch {
-    fail("No agent socket and no native open available");
-  }
-}
-
 // Build message
 let msg: Record<string, unknown>;
 if (isUrl) {
@@ -89,12 +70,24 @@ if (isUrl) {
   msg = { action: "open", host: HOST, remoteHome: HOME, path: target };
 }
 
-// Send to agent
+// Send to agent (tries Unix socket, then TCP)
 let response: Record<string, unknown>;
 try {
   response = await send(msg);
 } catch {
-  fail("failed to connect to agent socket\nropen: the SSH tunnel may have died. Reconnect SSH to restore.");
+  // Agent unreachable — fall back to native open if available
+  try {
+    Deno.statSync("/usr/bin/open");
+    console.error("ropen: agent unreachable, falling back to native open");
+    const openArgs = app ? ["-a", app, target] : [target];
+    const { code } = await new Deno.Command("/usr/bin/open", {
+      args: openArgs,
+      stdin: "inherit", stdout: "inherit", stderr: "inherit",
+    }).output();
+    Deno.exit(code);
+  } catch {
+    fail("agent unreachable and no native open available.\nropen: the SSH tunnel may have died. Reconnect SSH to restore.");
+  }
 }
 
 // Handle response

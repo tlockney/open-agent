@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net=unix
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net=unix,127.0.0.1:19876
 
 // open-agent-daemon: local daemon that receives open requests from remote
 // machines via a forwarded Unix socket, manages SSHFS mounts, and opens
@@ -6,7 +6,7 @@
 
 import { normalize } from "jsr:@std/path@1/normalize";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 
 const HOME = Deno.env.get("HOME");
 if (!HOME) {
@@ -15,6 +15,8 @@ if (!HOME) {
 }
 const AGENT_DIR = `${HOME}/.local/share/open-agent`;
 const SOCKET_PATH = `${AGENT_DIR}/open-agent.sock`;
+const TCP_HOST = "127.0.0.1";
+const TCP_PORT = 19876;
 const MOUNT_BASE = `${HOME}/.remote-mounts`;
 const LOG_PATH = `${AGENT_DIR}/agent.log`;
 const UNMOUNT_GRACE_MS = 30_000; // 30s after last session disconnects
@@ -555,6 +557,12 @@ async function handleConnection(conn: Deno.Conn): Promise<void> {
 
 // --- Main ---
 
+async function acceptConnections(listener: Deno.Listener): Promise<void> {
+  for await (const conn of listener) {
+    handleConnection(conn); // concurrent — don't await
+  }
+}
+
 async function main(): Promise<void> {
   await initLog();
   await Deno.mkdir(AGENT_DIR, { recursive: true });
@@ -565,13 +573,17 @@ async function main(): Promise<void> {
     await Deno.remove(SOCKET_PATH);
   } catch { /* doesn't exist */ }
 
-  const listener = Deno.listen({ transport: "unix", path: SOCKET_PATH });
+  const unixListener = Deno.listen({ transport: "unix", path: SOCKET_PATH });
   log(`open-agent listening on ${SOCKET_PATH}`);
+
+  const tcpListener = Deno.listen({ hostname: TCP_HOST, port: TCP_PORT });
+  log(`open-agent listening on ${TCP_HOST}:${TCP_PORT}`);
 
   // Graceful shutdown
   const shutdown = async () => {
     log("Shutting down...");
-    listener.close();
+    unixListener.close();
+    tcpListener.close();
     try { await Deno.remove(SOCKET_PATH); } catch { /* */ }
 
     // Unmount everything
@@ -585,9 +597,10 @@ async function main(): Promise<void> {
   Deno.addSignalListener("SIGINT", shutdown);
   Deno.addSignalListener("SIGTERM", shutdown);
 
-  for await (const conn of listener) {
-    handleConnection(conn); // concurrent — don't await
-  }
+  await Promise.all([
+    acceptConnections(unixListener),
+    acceptConnections(tcpListener),
+  ]);
 }
 
 main();

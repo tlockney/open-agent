@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-env
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-env --allow-net=127.0.0.1:19876
 // rnotify - send a macOS notification to the local machine via open-agent
 // Usage: rnotify "Build complete"
 //        rnotify "CI" "All tests passed"

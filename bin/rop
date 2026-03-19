@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net=127.0.0.1:19876
 // rop - proxy 1Password CLI operations through open-agent to the local machine
 // Usage: rop read "op://vault/item/field"
 //        rop run --env-file .env -- command args...

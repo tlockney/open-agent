@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-env
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-env --allow-net=127.0.0.1:19876
 // rpush - push a remote file to the local machine via open-agent
 // Usage: rpush file.txt              # copies to local ~/Downloads
 //        rpush -d ~/Desktop file.txt # copies to specific local directory
