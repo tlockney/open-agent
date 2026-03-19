@@ -14,7 +14,7 @@
         <string>--allow-write</string>
         <string>--allow-run</string>
         <string>--allow-env</string>
-        <string>--allow-net=unix</string>
+        <string>--allow-net=unix,127.0.0.1:19876</string>
         <string>/Users/YOURUSER/.local/share/open-agent/open-agent-daemon.ts</string>
     </array>
 
