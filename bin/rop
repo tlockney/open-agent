@@ -6,9 +6,12 @@
 
 import { send, requireSock, checkResponse, getStringField, fail } from "./lib/oa.ts";
 
-const USAGE = `Usage: rop <subcommand> [options]
+const USAGE = `Usage: rop [--account <account>] <subcommand> [options]
 
 Proxy 1Password operations to your local machine where the GUI is accessible.
+
+Global options:
+  --account <account>               1Password account to use (shorthand or UUID)
 
 Subcommands:
   read <ref>                        Read a single op:// secret reference
@@ -16,18 +19,32 @@ Subcommands:
 
 Examples:
   rop read "op://dev/database/url"
+  rop --account work read "op://dev/database/url"
   rop run -- make deploy
   rop run --env-file .env -- terraform apply
   rop run --env-file .env --env-file .env.local -- make test`;
 
 if (Deno.args.length === 0) { console.log(USAGE); Deno.exit(0); }
 
-const subcmd = Deno.args[0];
+// Parse global options (can appear anywhere before or after subcommand)
+let account: string | undefined;
+const filtered: string[] = [];
+for (let i = 0; i < Deno.args.length; i++) {
+  if (Deno.args[i] === "--account") {
+    i++;
+    if (i >= Deno.args.length) fail("--account requires a value");
+    account = Deno.args[i];
+  } else {
+    filtered.push(Deno.args[i]);
+  }
+}
+
+const subcmd = filtered[0];
 
 if (subcmd !== "-h" && subcmd !== "--help" && subcmd !== "help") {
   requireSock();
 }
-const rest = Deno.args.slice(1);
+const rest = filtered.slice(1);
 
 switch (subcmd) {
   case "read":
@@ -52,7 +69,7 @@ async function cmdRead(args: string[]): Promise<void> {
   const ref = args[0];
   if (!ref.startsWith("op://")) fail("reference must start with op://");
 
-  const response = await send({ action: "op-read", ref }, 30);
+  const response = await send({ action: "op-read", ref, ...(account && { account }) }, 30);
   checkResponse(response);
   const value = getStringField(response, "value");
   await Deno.stdout.write(new TextEncoder().encode(value));
@@ -134,7 +151,7 @@ async function cmdRun(args: string[]): Promise<void> {
   }
 
   // Resolve op:// references via the agent
-  const response = await send({ action: "op-resolve", refs }, 30);
+  const response = await send({ action: "op-resolve", refs, ...(account && { account }) }, 30);
   checkResponse(response);
 
   const resolved = response.resolved as Record<string, string> | undefined ?? {};

@@ -466,7 +466,8 @@ async function handleMessage(msg: Message): Promise<string> {
     case "op-read": {
       // Resolve a single op:// reference via the local 1Password CLI
       log(`op-read: resolving reference`); // deliberately not logging the ref or value
-      const cmd = new Deno.Command("op", { args: ["read", msg.ref] });
+      const opArgs = [...(msg.account ? ["--account", msg.account] : []), "read", msg.ref];
+      const cmd = new Deno.Command("op", { args: opArgs });
       const result = await cmd.output();
       if (!result.success) {
         const err = new TextDecoder().decode(result.stderr).trim();
@@ -483,9 +484,10 @@ async function handleMessage(msg: Message): Promise<string> {
       const errors: string[] = [];
 
       const entries = Object.entries(msg.refs);
+      const accountArgs = msg.account ? ["--account", msg.account] : [];
       const results = await Promise.all(
         entries.map(async ([key, ref]) => {
-          const cmd = new Deno.Command("op", { args: ["read", ref] });
+          const cmd = new Deno.Command("op", { args: [...accountArgs, "read", ref] });
           const result = await cmd.output();
           if (!result.success) {
             const err = new TextDecoder().decode(result.stderr).trim();
