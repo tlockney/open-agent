@@ -47,34 +47,32 @@ export function requireSock(): void {
   }
 }
 
-async function connectAgent(): Promise<Deno.Conn> {
-  // Try Unix socket first
-  if (existsSync(SOCK)) {
-    try {
-      return await Deno.connect({ transport: "unix", path: SOCK });
-    } catch { /* fall through to TCP */ }
-  }
+const CONNECT_TIMEOUT_MS = 2000;
 
-  // Fall back to TCP
-  try {
-    return await Deno.connect({ hostname: TCP_HOST, port: TCP_PORT });
-  } catch {
-    throw new Error(
-      `failed to connect to agent (tried socket ${SOCK} and TCP ${TCP_HOST}:${TCP_PORT})`
+function connectWithTimeout(
+  opts: Deno.ConnectOptions | Deno.UnixConnectOptions,
+  ms: number,
+): Promise<Deno.Conn> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("connect timeout")), ms);
+    Deno.connect(opts).then(
+      (conn) => { clearTimeout(timer); resolve(conn); },
+      (err) => { clearTimeout(timer); reject(err); },
     );
-  }
+  });
 }
 
-export async function send(
+/** Send a message over a specific transport and return the parsed response. */
+async function sendVia(
+  opts: Deno.ConnectOptions | Deno.UnixConnectOptions,
   message: Record<string, unknown>,
-  timeoutSec = 5,
+  timeoutSec: number,
 ): Promise<Record<string, unknown>> {
-  const conn = await connectAgent();
+  const conn = await connectWithTimeout(opts, CONNECT_TIMEOUT_MS);
   try {
     const payload = JSON.stringify(message) + "\n";
     await conn.write(new TextEncoder().encode(payload));
 
-    // Read with timeout
     const buf = new Uint8Array(65536);
     const timer = setTimeout(() => conn.close(), timeoutSec * 1000);
     const n = await conn.read(buf);
@@ -83,6 +81,37 @@ export async function send(
     return JSON.parse(new TextDecoder().decode(buf.subarray(0, n)).trim()) as Record<string, unknown>;
   } finally {
     try { conn.close(); } catch { /* already closed */ }
+  }
+}
+
+export async function send(
+  message: Record<string, unknown>,
+  timeoutSec = 5,
+): Promise<Record<string, unknown>> {
+  // Try Unix socket first. If the socket exists but the tunnel is dead
+  // (common with SSH-forwarded sockets after a disconnect), the send will
+  // time out and we fall through to TCP — no separate probe needed.
+  if (existsSync(SOCK)) {
+    try {
+      return await sendVia(
+        { transport: "unix", path: SOCK } as Deno.UnixConnectOptions,
+        message,
+        timeoutSec,
+      );
+    } catch { /* fall through to TCP */ }
+  }
+
+  // Fall back to TCP
+  try {
+    return await sendVia(
+      { hostname: TCP_HOST, port: TCP_PORT },
+      message,
+      timeoutSec,
+    );
+  } catch {
+    throw new Error(
+      `failed to connect to agent (tried socket ${SOCK} and TCP ${TCP_HOST}:${TCP_PORT})`
+    );
   }
 }
 
