@@ -54,8 +54,8 @@ type Message =
   | { action: "open-url"; url: string }
   | { action: "push"; host: string; remoteHome: string; path: string; dest?: string }
   | { action: "pull"; host: string; remoteHome: string; localPath: string; remoteDest: string }
-  | { action: "op-read"; ref: string }
-  | { action: "op-resolve"; refs: Record<string, string> }
+  | { action: "op-read"; ref: string; account?: string }
+  | { action: "op-resolve"; refs: Record<string, string>; account?: string }
   | { action: "status" };
 
 function parseMessage(raw: unknown): Message {
@@ -121,6 +121,9 @@ function parseMessage(raw: unknown): Message {
       if (!/^op:\/\//.test(obj.ref as string)) {
         throw new Error("ref must be an op:// reference");
       }
+      if (obj.account !== undefined && typeof obj.account !== "string") {
+        throw new Error("Invalid 'account' field");
+      }
       break;
     case "op-resolve": {
       if (typeof obj.refs !== "object" || obj.refs === null || Array.isArray(obj.refs)) {
@@ -130,6 +133,9 @@ function parseMessage(raw: unknown): Message {
       for (const [key, val] of Object.entries(refs)) {
         if (typeof val !== "string") throw new Error(`Invalid ref value for '${key}'`);
         if (!/^op:\/\//.test(val)) throw new Error(`'${key}' is not an op:// reference: ${val}`);
+      }
+      if (obj.account !== undefined && typeof obj.account !== "string") {
+        throw new Error("Invalid 'account' field");
       }
       break;
     }
@@ -532,10 +538,11 @@ async function handleMessage(msg: Message): Promise<string> {
 // --- Socket server ---
 
 async function handleConnection(conn: Deno.Conn): Promise<void> {
+  log(`Connection received from ${conn.remoteAddr?.transport ?? "unknown"}`);
   try {
     const buf = new Uint8Array(8192);
     const n = await conn.read(buf);
-    if (!n) return;
+    if (!n) { log("Connection closed with no data"); return; }
 
     const raw = new TextDecoder().decode(buf.subarray(0, n)).trim();
     let msg: Message;
@@ -563,8 +570,12 @@ async function handleConnection(conn: Deno.Conn): Promise<void> {
 // --- Main ---
 
 async function acceptConnections(listener: Deno.Listener): Promise<void> {
-  for await (const conn of listener) {
-    handleConnection(conn); // concurrent — don't await
+  try {
+    for await (const conn of listener) {
+      handleConnection(conn).catch((e) => log(`Unhandled connection error: ${e}`));
+    }
+  } catch (e) {
+    log(`Listener error: ${e}`);
   }
 }
 
