@@ -5,66 +5,17 @@
 
 ## Motivation
 
-The current open-agent architecture relies on SSH `RemoteForward` with Unix domain sockets to tunnel commands from remote hosts back to a macOS daemon. This works well from a Mac, but breaks down when working from an iPad:
+The open-agent daemon currently runs on macOS. When working from an iPad via SSH, there's no local daemon to receive commands. Despite iPadOS constraints, a useful subset of the workflow can be made to work.
 
-- **Tailscale SSH** doesn't support Unix domain socket forwarding (see janus host issues)
-- iPad SSH clients (Secure ShellFish, Blink) support TCP port forwarding but not Unix socket forwarding
-- There's no open-agent daemon running on iPadOS to receive commands
+For transport/connectivity details (Unix socket, TCP fallback, Tailscale direct), see [connectivity-plan.md](connectivity-plan.md).
 
-Despite these constraints, a useful subset of the workflow can be made to work from iPad.
-
-## Architecture Overview
-
-```mermaid
-graph TB
-    subgraph "Remote Host"
-        R[r* commands] -->|"Unix socket (Mac)<br/>TCP port (iPad/fallback)"| tunnel
-    end
-
-    subgraph "Transport Layer"
-        tunnel[SSH tunnel]
-    end
-
-    subgraph "macOS (existing)"
-        tunnel --> MA[open-agent daemon]
-        MA --> MO[open / Finder]
-        MA --> MC[clipboard]
-        MA --> MV[VS Code]
-        MA --> MN[notifications]
-    end
-
-    subgraph "iPadOS (new)"
-        tunnel --> IA[open-agent-ios app]
-        IA --> IU[Open URLs in Safari]
-        IA --> IC[Clipboard]
-        IA --> IF[Open files via Files app]
-        IA --> IV[VS Code tunnel URL]
-        IA --> IS[Shortcuts integration]
-    end
-```
-
-## Phase 1: TCP Listener in open-agent
-
-**Goal**: Add a TCP transport alongside the existing Unix socket. This unblocks iPad support *and* fixes the Tailscale SSH forwarding issue.
-
-### Changes
-
-- **open-agent-daemon.ts**: Listen on both the Unix socket and a localhost TCP port (e.g., `127.0.0.1:19876`)
-- **lib/oa.ts** (remote side): Try Unix socket first, fall back to `localhost:19876` via TCP
-- **SSH config**: iPad clients use `RemoteForward 19876 127.0.0.1:19876` instead of socket forwarding
-- **Tailscale hosts**: Can also use TCP forwarding, bypassing the socket limitation entirely
-
-### Protocol
-
-No changes needed. The existing JSON-over-newline protocol works identically over TCP.
-
-### Security
-
-The TCP port binds to `127.0.0.1` only — not exposed to the network. Combined with SSH tunnel, the security model is equivalent to the Unix socket approach.
-
-## Phase 2: iPadOS App (Swift)
+## iPadOS App (Swift)
 
 **Goal**: A native iPadOS app (`open-agent-ios`) that receives commands from remote hosts and executes local actions.
+
+### Distribution
+
+Personal use only — side-loaded directly from Xcode to the iPad. No App Store or TestFlight distribution planned. This removes review constraints and allows use of private APIs or entitlements if needed.
 
 ### Repository
 
@@ -77,39 +28,41 @@ Separate repo: `open-agent-ios` (Swift/SwiftUI)
 | Open URL | `UIApplication.shared.open(url)` — opens in Safari |
 | Clipboard write | `UIPasteboard.general.string = content` |
 | Clipboard read | `UIPasteboard.general.string` |
-| Open file | Open via Secure ShellFish's File provider (see below) |
+| Open file | Open via Files app provider (see below) |
 | VS Code | Open `vscode.dev` tunnel URL in Safari or Blink |
 | Notifications | `UNUserNotificationCenter` local notifications |
+| Receive file (rpush) | Save to Files app via configurable destination (e.g., iCloud Drive or On My iPad) |
 
 ### Transport Options
 
 The app needs to receive commands from remote hosts via SSH tunnel. Options:
 
-1. **TCP listener** — The app listens on a localhost port. iPad SSH clients forward the remote port to this local port. Challenge: iPadOS aggressively suspends background apps, so the listener may not stay alive.
+1. **TCP listener** — The app listens on a localhost port. iPad SSH clients forward the remote port to this local port. The daemon-side TCP listener (`127.0.0.1:19876`) and the client-side fallback in `lib/oa.ts` are already implemented, so the iPad app only needs to implement the listener side using the same JSON-over-newline protocol. The port is configurable via `OPEN_AGENT_TCP_PORT` on the remote side. Challenge: iPadOS aggressively suspends background apps, so the listener may not stay alive.
 
-2. **Tailscale direct** — If both iPad and Mac are on the same tailnet, the iPad app could connect directly to the Mac's open-agent. No SSH tunnel needed for this path, but requires Tailscale.
+2. **Tailscale direct** — If both iPad and Mac are on the same tailnet, the iPad app could connect directly to the Mac's open-agent. No SSH tunnel needed for this path, but requires Tailscale. The remote client already supports `OPEN_AGENT_TCP_HOST` override, so pointing it at the Mac's Tailscale hostname would work today if the daemon bound to that interface. See [connectivity-plan.md](connectivity-plan.md) for detection and auth details.
 
-3. **Network Extension** — An iOS Network Extension can run in the background and maintain the TCP listener. More complex to implement but solves the suspension problem.
+3. **Network Extension** — An iOS Network Extension can run in the background and maintain the TCP listener. More complex to implement but solves the suspension problem. Since the app is side-loaded via Xcode (not distributed through the App Store), there are no review constraints on this approach.
 
 4. **Hybrid** — Use the TCP listener when the app is foregrounded. For background delivery, use a lightweight relay (e.g., push notification via a small cloud function) as a fallback.
 
-### File Opening via Secure ShellFish
+### File Opening via Files App Providers
 
-Secure ShellFish exposes remote filesystems through the iPadOS Files app. The file provider path follows a pattern like:
+Both Secure ShellFish and Blink expose remote filesystems through the iPadOS Files app. The file provider paths follow patterns like:
 
 ```
 ShellFish/<server-name>/<remote-path>
+Blink/<server-name>/<remote-path>
 ```
 
 The iPad app would:
 
 1. Receive an `open` action with `host` and `path`
-2. Map to the Secure ShellFish file provider URL
+2. Map to the appropriate file provider URL (based on which SSH client is in use)
 3. Use `UIDocumentInteractionController` to open the file with a compatible app
 
 This requires:
-- The remote host is configured in Secure ShellFish
-- A mapping from open-agent host aliases to Secure ShellFish server names
+- The remote host is configured in the SSH client (Secure ShellFish or Blink)
+- A mapping from open-agent host aliases to the SSH client's server names
 - Discovery of which iPadOS apps can handle the file type
 
 ### VS Code via Tunnels
@@ -130,7 +83,7 @@ The iPad app can expose actions via the Shortcuts app using `AppIntents`:
 - "Copy from remote clipboard" — pull clipboard from a remote session
 - "Check agent status" — show active sessions
 
-## Phase 3: Graceful Degradation in Remote Scripts
+## Graceful Degradation in Remote Scripts
 
 **Goal**: Remote `r*` commands detect the client environment and adapt behavior.
 
@@ -152,11 +105,11 @@ The remote scripts can detect the environment via:
 | `rcopy` | pbcopy | UIPasteboard | OSC 52 escape sequence |
 | `rpaste` | pbpaste | UIPasteboard | OSC 52 (if supported) |
 | `rnotify` | terminal-notifier | Local notification | Print to stderr |
+| `rpush` | Save to ~/Downloads | Save to Files app | `scp` / print path |
+| `rpull` | Read local file | Not supported (sandboxing) | `scp` / print path |
 
 ## Open Questions
 
-- **Background execution**: What's the most reliable way to keep a TCP listener alive on iPadOS? Network Extension is the robust answer but adds App Store review complexity.
-- **Tailscale as primary transport**: If both devices are always on the tailnet, should the iPad app skip SSH tunneling entirely and connect directly to the Mac's agent? This would also enable Mac-to-Mac without SSH.
-- **File provider mapping**: How reliable is the Secure ShellFish file provider path? Does it change across app updates? Is there a URL scheme we can use instead?
-- **Blink vs Secure ShellFish**: Should we target one client primarily, or keep the approach client-agnostic?
-- **App Store viability**: A TCP listener app is fine for personal use via TestFlight/ad-hoc, but may face scrutiny for App Store distribution. Is that a concern?
+- **Background execution**: What's the most reliable way to keep a TCP listener alive on iPadOS? Network Extension is the robust answer but adds implementation complexity. Since this is a personal-use app installed directly from Xcode (no App Store review), private APIs or entitlements are an option if needed.
+- **File provider mapping**: How reliable are the Secure ShellFish and Blink file provider paths? Do they change across app updates? Is there a URL scheme we can use instead?
+- **SSH client selection**: Both Blink and Secure ShellFish support Files app providers. Should the app auto-detect which client is available, or require a user preference?
