@@ -1,0 +1,19 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  check-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Type check
+        run: deno check src/lib/*.ts src/daemon/main.ts src/daemon/handlers.ts src/daemon/mount_manager.ts
+
+      - name: Run tests
+        run: deno task test
