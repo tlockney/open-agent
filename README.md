@@ -2,7 +2,7 @@
 
 Bridge your local Mac's capabilities to remote SSH sessions.
 
-A lightweight Deno daemon that runs on your personal Mac, receives requests from a remote machine via SSH-forwarded Unix socket. Opens files, transfers files, shares clipboard, sends notifications, opens URLs, and proxies 1Password CLI — all from the remote terminal.
+A lightweight Deno daemon that runs on your personal Mac, receives requests from a remote machine via SSH-forwarded Unix socket (with TCP fallback). Opens files, transfers files, shares clipboard, sends notifications, opens URLs, and proxies 1Password CLI — all from the remote terminal.
 
 ## How it works
 
@@ -22,7 +22,7 @@ flowchart LR
         mount["~/.remote-mounts/\nSSHFS mount"]
     end
 
-    ropen -- "JSON over\nSSH-forwarded\nUnix socket" --> agent
+    ropen -- "JSON over\nSSH-forwarded\nUnix socket\n(TCP fallback)" --> agent
     tools -- "JSON over\nUnix socket" --> agent
     hook -- "session\nlifecycle" --> agent
     agent --> open
@@ -90,10 +90,13 @@ open-agent setup-remote all
 open-agent/
   src/
     daemon/
-      main.ts            Daemon entry point (socket server, shutdown)
+      main.ts            Daemon entry point (server, wiring, shutdown)
+      handlers.ts        Per-action message handlers
+      mount_manager.ts   SSHFS mount lifecycle management
+      logger.ts          File + console logging
     lib/
       messages.ts        Shared message types and validation
-      oa.ts              Shared transport (socket communication)
+      oa.ts              Shared transport (socket/TCP communication)
       path_utils.ts      Path translation for SSHFS mounts
       rproj_utils.ts     Shared utilities for rproj
     cli/
@@ -153,7 +156,9 @@ rpaste                      # paste from local clipboard
 
 # Local notifications
 rnotify "Build complete"
-rnotify -t "Deploy" -m "Deployed to staging" -s default
+rnotify "Deploy" "Deployed to staging"
+rnotify -s Ping "CI" "All tests passed"
+rnotify -u "myproject" "Tests" "Suite passed"
 
 # File transfer
 rpush build.tar.gz           # push file to local ~/Downloads
@@ -162,7 +167,9 @@ rpull ~/Downloads/image.png  # pull file from local to remote cwd
 
 # 1Password CLI proxy
 rop read "op://vault/item/field"
+rop --account work read "op://dev/database/url"
 rop run --env-file .env -- make deploy
+rop run --env-file .env --env-file .env.local -- terraform apply
 
 # SSH-aware VS Code wrapper
 rcode .                      # opens in local VS Code via remote-ssh
@@ -171,13 +178,20 @@ rcode .                      # opens in local VS Code via remote-ssh
 From the local machine via rproj:
 
 ```bash
-# Open a project in Finder via SSHFS
-rproj finder myproject
-rproj f                    # interactive selection
+# Interactive project selection (pick project, then action)
+rproj
+
+# List all projects
+rproj list
+rproj l -h workmbp           # filter to a specific host
+
+# Open in tmux, VS Code, or Finder
+rproj tmux myproject          # direct tmux session
+rproj code                    # interactive VS Code selection
+rproj finder                  # interactive Finder via SSHFS
 
 # Check agent status
 rproj status
-rproj s
 ```
 
 ## Configuration
@@ -204,8 +218,12 @@ Legacy config at `~/.config/rproj/hosts` is auto-detected with a warning.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPEN_AGENT_HOST` | `workmbp` | SSH config Host alias for the remote machine |
-| `OPEN_AGENT_SOCK` | `/tmp/open-agent.sock` | Path to the forwarded socket |
+| `OPEN_AGENT_HOST` | hostname fallback | SSH config Host alias for this remote machine |
+| `OPEN_AGENT_SOCK` | `/tmp/open-agent.sock` | Path to the forwarded Unix socket |
+| `OPEN_AGENT_TCP_HOST` | `127.0.0.1` | TCP fallback host (when socket is unavailable) |
+| `OPEN_AGENT_TCP_PORT` | `19876` | TCP fallback port |
+
+Host identity is resolved in order: `OPEN_AGENT_HOST` env var, then `~/.config/open-agent/identity` file, then `hostname -s`.
 
 **Agent constants (in `src/daemon/main.ts`):**
 
@@ -213,6 +231,20 @@ Legacy config at `~/.config/rproj/hosts` is auto-detected with a warning.
 |----------|---------|-------------|
 | `UNMOUNT_GRACE_MS` | `30000` | Delay before unmounting after last session exits |
 | SSHFS `cache_timeout` | `120` | Metadata cache in seconds (trade freshness for speed) |
+
+## Development
+
+```bash
+# Run tests
+deno task test
+
+# Type check
+deno task check
+
+# Run daemon directly (for development)
+deno run --allow-read --allow-write --allow-run --allow-env \
+  --allow-net=unix,127.0.0.1:19876 src/daemon/main.ts
+```
 
 ## Limitations
 
@@ -223,7 +255,7 @@ Legacy config at `~/.config/rproj/hosts` is auto-detected with a warning.
 
 ## Troubleshooting
 
-**Socket not found on remote:** Verify SSH config has `RemoteForward` and `StreamLocalBindUnlink yes`. If using `ControlMaster`, kill the control socket (`ssh -O exit workmbp`) and reconnect.
+**Socket not found on remote:** Verify SSH config has `RemoteForward` and `StreamLocalBindUnlink yes`. If using `ControlMaster`, kill the control socket (`ssh -O exit workmbp`) and reconnect. The agent also listens on TCP `127.0.0.1:19876` as a fallback.
 
 **Mount failures:** Verify sshfs works manually: `sshfs workmbp:~ /tmp/test-mount`. Check that macFUSE kernel extension is loaded.
 
