@@ -6,6 +6,7 @@
 
 import { type Message, parseMessage } from "../lib/messages.ts";
 import { translatePath } from "../lib/path_utils.ts";
+import { MountManager, createRealDeps } from "./mount_manager.ts";
 
 const VERSION = "0.3.0";
 
@@ -42,193 +43,39 @@ function log(msg: string): void {
   logFile?.writeSync(new TextEncoder().encode(line));
 }
 
-// --- Types ---
+// --- Mount manager ---
 
-interface MountState {
-  host: string;
-  remoteHome: string;
-  mountPoint: string;
-  sessions: Set<string>;
-  unmountTimer?: number;
-}
-
-const mounts = new Map<string, MountState>();
-
-// Serialize mount operations per-host to prevent concurrent sshfs spawns
-const mountLocks = new Map<string, Promise<MountState>>();
-
-// --- Mount management ---
-
-async function isMounted(mountPoint: string): Promise<boolean> {
-  try {
-    const cmd = new Deno.Command("mount");
-    const { stdout } = await cmd.output();
-    const output = new TextDecoder().decode(stdout);
-    return output.includes(mountPoint);
-  } catch {
-    return false;
-  }
-}
-
-async function isMountResponsive(mountPoint: string): Promise<boolean> {
-  if (!await isMounted(mountPoint)) return false;
-  try {
-    // Quick stat with a timeout — hung FUSE mounts block indefinitely
-    const cmd = new Deno.Command("stat", {
-      args: [mountPoint],
-      signal: AbortSignal.timeout(3000),
-    });
-    const result = await cmd.output();
-    return result.success;
-  } catch {
-    return false;
-  }
-}
-
-function ensureMount(host: string, remoteHome: string): Promise<MountState> {
-  // Serialize per-host so concurrent requests don't spawn parallel sshfs processes.
-  // Use .catch() on the chain so a prior failure doesn't block subsequent attempts,
-  // and on the stored promise so rejections don't go unhandled.
-  const existing = mountLocks.get(host) ?? Promise.resolve(undefined as unknown as MountState);
-  const next = existing.catch(() => undefined as unknown as MountState).then(() => doMount(host, remoteHome));
-  const guarded = next.catch((e: unknown) => { throw e; });
-  mountLocks.set(host, guarded);
-  guarded.catch(() => { /* prevent unhandled rejection on the stored promise */ });
-  guarded.finally(() => {
-    if (mountLocks.get(host) === guarded) mountLocks.delete(host);
-  });
-  return next;
-}
-
-async function doMount(host: string, remoteHome: string): Promise<MountState> {
-  let state = mounts.get(host);
-
-  if (state) {
-    // Cancel any pending unmount
-    if (state.unmountTimer !== undefined) {
-      clearTimeout(state.unmountTimer);
-      state.unmountTimer = undefined;
-    }
-
-    // Update remoteHome if it changed (shouldn't, but defensive)
-    state.remoteHome = remoteHome;
-
-    // Verify mount is alive
-    if (await isMountResponsive(state.mountPoint)) {
-      return state;
-    }
-
-    // Mount died — clean up and remount
-    log(`Mount for ${host} is stale, remounting...`);
-    await forceUnmount(state.mountPoint);
-  }
-
-  const mountPoint = `${MOUNT_BASE}/${host}`;
-  await Deno.mkdir(mountPoint, { recursive: true });
-
-  log(`Mounting ${host}:${remoteHome} at ${mountPoint}`);
-  const cmd = new Deno.Command("sshfs", {
-    args: [
-      `${host}:${remoteHome}`,
-      mountPoint,
-      "-o", "reconnect",
-      "-o", "ServerAliveInterval=15",
-      "-o", "ServerAliveCountMax=3",
-      "-o", "follow_symlinks",
-      "-o", `volname=remote-${host}`,
-      // Caching for performance — slightly stale metadata is fine for opens
-      "-o", "cache=yes",
-      "-o", "cache_timeout=120",
-      "-o", "attr_timeout=120",
-    ],
-  });
-
-  const result = await cmd.output();
-  if (!result.success) {
-    const err = new TextDecoder().decode(result.stderr);
-    throw new Error(`sshfs mount failed: ${err}`);
-  }
-
-  state = {
-    host,
-    remoteHome,
-    mountPoint,
-    sessions: state?.sessions ?? new Set(),
-  };
-  mounts.set(host, state);
-  log(`Mounted ${host} successfully`);
-  return state;
-}
-
-async function forceUnmount(mountPoint: string): Promise<void> {
-  try {
-    // Try normal unmount first
-    const cmd = new Deno.Command("umount", { args: [mountPoint] });
-    const result = await cmd.output();
-    if (result.success) return;
-  } catch { /* fall through */ }
-
-  try {
-    // macOS: diskutil force unmount
-    const cmd = new Deno.Command("diskutil", {
-      args: ["unmount", "force", mountPoint],
-    });
-    await cmd.output();
-  } catch (e) {
-    log(`Force unmount failed for ${mountPoint}: ${e}`);
-  }
-}
-
-async function unmountHost(host: string): Promise<void> {
-  const state = mounts.get(host);
-  if (!state) return;
-
-  log(`Unmounting ${host} (${state.mountPoint})`);
-  await forceUnmount(state.mountPoint);
-  mounts.delete(host);
-}
-
-function scheduleUnmount(host: string): void {
-  const state = mounts.get(host);
-  if (!state) return;
-
-  if (state.unmountTimer !== undefined) {
-    clearTimeout(state.unmountTimer);
-  }
-
-  log(`Scheduling unmount for ${host} in ${UNMOUNT_GRACE_MS / 1000}s`);
-  state.unmountTimer = setTimeout(() => {
-    if (state.sessions.size === 0) {
-      unmountHost(host);
-    }
-  }, UNMOUNT_GRACE_MS);
-}
+const mountManager = new MountManager(
+  createRealDeps(log),
+  MOUNT_BASE,
+  UNMOUNT_GRACE_MS,
+);
 
 // --- Command handlers ---
 
 async function handleMessage(msg: Message): Promise<string> {
   switch (msg.action) {
     case "connect": {
-      const state = await ensureMount(msg.host, msg.remoteHome);
+      const state = await mountManager.ensureMount(msg.host, msg.remoteHome);
       state.sessions.add(msg.sessionId);
       log(`Session ${msg.sessionId}@${msg.host} connected (${state.sessions.size} active)`);
       return JSON.stringify({ ok: true, mountPoint: state.mountPoint });
     }
 
     case "disconnect": {
-      const state = mounts.get(msg.host);
+      const state = mountManager.getMount(msg.host);
       if (state) {
         state.sessions.delete(msg.sessionId);
         log(`Session ${msg.sessionId}@${msg.host} disconnected (${state.sessions.size} remaining)`);
         if (state.sessions.size === 0) {
-          scheduleUnmount(msg.host);
+          mountManager.scheduleUnmount(msg.host);
         }
       }
       return JSON.stringify({ ok: true });
     }
 
     case "open": {
-      const state = await ensureMount(msg.host, msg.remoteHome);
+      const state = await mountManager.ensureMount(msg.host, msg.remoteHome);
       const localPath = translatePath(msg.path, state);
 
       const args: string[] = [];
@@ -317,7 +164,7 @@ async function handleMessage(msg: Message): Promise<string> {
 
     case "push": {
       // Copy a remote file to the local machine
-      const state = await ensureMount(msg.host, msg.remoteHome);
+      const state = await mountManager.ensureMount(msg.host, msg.remoteHome);
       const srcPath = translatePath(msg.path, state);
       const dest = msg.dest ?? `${HOME}/Downloads`;
       const fileName = srcPath.split("/").pop()!;
@@ -330,7 +177,7 @@ async function handleMessage(msg: Message): Promise<string> {
 
     case "pull": {
       // Copy a local file to the remote machine via SSHFS
-      const state = await ensureMount(msg.host, msg.remoteHome);
+      const state = await mountManager.ensureMount(msg.host, msg.remoteHome);
       const destMountPath = translatePath(msg.remoteDest, state);
       const fileName = msg.localPath.split("/").pop()!;
 
@@ -400,7 +247,7 @@ async function handleMessage(msg: Message): Promise<string> {
 
     case "status": {
       const status = Object.fromEntries(
-        [...mounts.entries()].map(([host, state]) => [
+        [...mountManager.getAllMounts().entries()].map(([host, state]) => [
           host,
           {
             mountPoint: state.mountPoint,
@@ -484,9 +331,7 @@ async function main(): Promise<void> {
     try { await Deno.remove(SOCKET_PATH); } catch { /* */ }
 
     // Unmount everything
-    for (const [host] of mounts) {
-      await unmountHost(host);
-    }
+    await mountManager.unmountAll();
     logFile?.close();
     Deno.exit(0);
   };
