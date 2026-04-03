@@ -105,6 +105,18 @@ echo "Installing files..."
 
 mkdir -p "$AGENT_DIR" "$BIN_DIR" "$HOME/.remote-mounts"
 
+# --- Clean up old layout artifacts ---
+
+# Prior versions installed files directly; the new layout uses src/
+if [[ -f "$AGENT_DIR/open-agent-daemon.ts" ]]; then
+    rm -f "$AGENT_DIR/open-agent-daemon.ts"
+    info "Removed old $AGENT_DIR/open-agent-daemon.ts"
+fi
+if [[ -d "$BIN_DIR/lib" ]]; then
+    rm -rf "$BIN_DIR/lib"
+    info "Removed old $BIN_DIR/lib/"
+fi
+
 # --- Copy source tree ---
 
 # Remove stale source tree from previous install

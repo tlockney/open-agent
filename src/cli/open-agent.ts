@@ -209,6 +209,8 @@ async function cmdSetupRemote(target: string): Promise<void> {
     const deployResult = await run("ssh", [
       host,
       "set -e; cd $(mktemp -d); tar xzf -; " +
+      // Clean up old layout artifacts (pre-src/ structure)
+      "rm -rf ~/.local/bin/lib; " +
       // Install source tree
       "rm -rf ~/.local/share/open-agent/src; " +
       "cp -R src ~/.local/share/open-agent/src; " +
