@@ -20,12 +20,13 @@ jobs:
           PREFIX="open-agent-${VERSION}"
           tar czf "${PREFIX}.tar.gz" \
             --transform "s,^,${PREFIX}/," \
-            open-agent-daemon.ts \
+            src/ \
+            deno.json \
+            oa-wrapper.sh \
             com.open-agent.daemon.plist \
             install.sh \
             open-agent-hook.sh \
-            ssh_config.example \
-            bin/
+            ssh_config.example
 
       - name: Publish release
         uses: softprops/action-gh-release@v2

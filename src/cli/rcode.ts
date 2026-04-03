@@ -12,14 +12,14 @@ const target = Deno.args[0] ?? ".";
 
 if (Deno.env.get("SSH_CONNECTION")) {
   // On the remote — use ropen -v
-  const { code } = await new Deno.Command(`${scriptDir}/ropen`, {
+  const { code } = await new Deno.Command(`${scriptDir}/ropen.ts`, {
     args: ["-v", target],
     stdin: "inherit", stdout: "inherit", stderr: "inherit",
   }).output();
   Deno.exit(code);
 } else {
   // On the local Mac — delegate to rproj code
-  const { code } = await new Deno.Command(`${scriptDir}/rproj`, {
+  const { code } = await new Deno.Command(`${scriptDir}/rproj.ts`, {
     args: ["code", ...Deno.args],
     stdin: "inherit", stdout: "inherit", stderr: "inherit",
   }).output();

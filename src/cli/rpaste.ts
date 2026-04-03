@@ -3,7 +3,7 @@
 // Usage: rpaste
 //        rpaste | vim -
 
-import { send, requireSock, checkResponse, getStringField } from "./lib/oa.ts";
+import { send, requireSock, checkResponse, getStringField } from "../lib/oa.ts";
 
 requireSock();
 

@@ -72,8 +72,8 @@ cd open-agent
 The install script:
 
 - Checks prerequisites (deno, sshfs, terminal-notifier)
-- Copies `open-agent-daemon.ts` to `~/.local/share/open-agent/`
-- Copies all scripts to `~/.local/bin/`
+- Copies the `src/` tree to `~/.local/share/open-agent/src/`
+- Installs CLI wrappers to `~/.local/bin/` (busybox-style: one wrapper script, multiple names)
 - Installs and starts a launchd service
 - Migrates config from legacy `~/.config/rproj/` if present
 - Prints SSH config to add
@@ -88,21 +88,28 @@ open-agent setup-remote all
 
 ```
 open-agent/
-  bin/
-    open-agent           CLI (setup-remote, update, status)
-    ropen                Remote open wrapper
-    rcode                VS Code remote-ssh wrapper
-    rcopy                Copy stdin to local clipboard
-    rpaste               Paste from local clipboard
-    rnotify              Send local macOS notification
-    rop                  1Password CLI proxy
-    rpush                Push file to local machine
-    rpull                Pull file from local machine
-    rproj                Unified project management tool
-    rtmux                tmux session wrapper
+  src/
+    daemon/
+      main.ts            Daemon entry point (socket server, shutdown)
     lib/
-      oa.ts              Shared library (socket communication)
-  open-agent-daemon.ts   Deno daemon
+      messages.ts        Shared message types and validation
+      oa.ts              Shared transport (socket communication)
+      path_utils.ts      Path translation for SSHFS mounts
+      rproj_utils.ts     Shared utilities for rproj
+    cli/
+      open-agent.ts      CLI (setup-remote, update, status)
+      ropen.ts           Remote open wrapper
+      rcode.ts           VS Code remote-ssh wrapper
+      rcopy.ts           Copy stdin to local clipboard
+      rpaste.ts          Paste from local clipboard
+      rnotify.ts         Send local macOS notification
+      rop.ts             1Password CLI proxy
+      rpush.ts           Push file to local machine
+      rpull.ts           Pull file from local machine
+      rproj.ts           Unified project management tool
+      rtmux.ts           tmux session wrapper
+  deno.json              Project config (tasks, compiler options)
+  oa-wrapper.sh          Busybox-style CLI dispatcher
   com.open-agent.daemon.plist   launchd service template
   install.sh             Installer (curl|sh + --local mode)
   open-agent-hook.sh     Shell session hook (deployed to remotes)
@@ -200,7 +207,7 @@ Legacy config at `~/.config/rproj/hosts` is auto-detected with a warning.
 | `OPEN_AGENT_HOST` | `workmbp` | SSH config Host alias for the remote machine |
 | `OPEN_AGENT_SOCK` | `/tmp/open-agent.sock` | Path to the forwarded socket |
 
-**Agent constants (in `open-agent-daemon.ts`):**
+**Agent constants (in `src/daemon/main.ts`):**
 
 | Constant | Default | Description |
 |----------|---------|-------------|

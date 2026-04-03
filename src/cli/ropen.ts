@@ -4,7 +4,8 @@
 // Falls back to native open if the agent is unreachable.
 
 import { parseArgs } from "jsr:@std/cli@1/parse-args";
-import { send, fail, HOST, HOME } from "./lib/oa.ts";
+import type { Message } from "../lib/messages.ts";
+import { send, fail, HOST, HOME } from "../lib/oa.ts";
 
 const USAGE = `Usage: ropen [options] <path|url>
 
@@ -59,7 +60,7 @@ if (app.includes("Visual Studio Code") || (app.includes("Code") && !app.includes
 }
 
 // Build message
-let msg: Record<string, unknown>;
+let msg: Message;
 if (isUrl) {
   msg = { action: "open-url", url: target };
 } else if (vscode) {
@@ -71,7 +72,7 @@ if (isUrl) {
 }
 
 // Send to agent (tries Unix socket, then TCP)
-let response: Record<string, unknown>;
+let response: import("../lib/messages.ts").Response;
 try {
   response = await send(msg);
 } catch {
@@ -91,12 +92,11 @@ try {
 }
 
 // Handle response
-if (response.ok === true) {
+if (response.ok) {
   const localPath = response.localPath;
   if (typeof localPath === "string") {
     console.log(`Opened: ${localPath}`);
   }
 } else {
-  const error = typeof response.error === "string" ? response.error : "unknown error";
-  fail(error);
+  fail(response.error);
 }

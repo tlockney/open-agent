@@ -19,6 +19,13 @@ import { red, green, blue, yellow } from "jsr:@std/fmt@1/colors";
 import { basename } from "jsr:@std/path@1/basename";
 import { existsSync } from "jsr:@std/fs@1/exists";
 import { parseArgs as denoParseArgs } from "jsr:@std/cli@1/parse-args";
+import {
+  type HostEntry,
+  type ProjectEntry,
+  type ProjectMatch,
+  shellQuote,
+  buildFzfEntries,
+} from "../lib/rproj_utils.ts";
 
 // --- Constants ---
 
@@ -36,24 +43,6 @@ const SCRIPT_NAME = "rproj";
 const SSH_TIMEOUT_MS = 5_000;
 
 // --- Types ---
-
-interface HostEntry {
-  alias: string;
-  dir: string;
-  label: string;
-}
-
-interface ProjectEntry {
-  host: string;
-  baseDir: string;
-  projectPath: string;
-  label: string;
-}
-
-interface ProjectMatch {
-  host: string;
-  path: string;
-}
 
 interface Opts {
   hostFilter: string | null;
@@ -159,12 +148,6 @@ async function exec(cmd: string, args: string[]): Promise<never> {
   Deno.exit(code);
 }
 
-// Escape a string for safe use inside single quotes in shell commands.
-// Handles the only dangerous character: single quote itself.
-// 'foo'bar' → 'foo'\''bar'
-function shellQuote(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
-}
 
 async function agentSend(message: string): Promise<Record<string, unknown>> {
   let conn: Deno.UnixConn;
@@ -313,44 +296,6 @@ async function discoverProjects(hosts: HostEntry[]): Promise<ProjectEntry[]> {
 }
 
 // --- fzf Integration ---
-
-function buildFzfEntries(projects: ProjectEntry[]): string {
-  const lines: string[] = [];
-  let currentLabel = "";
-  let group: { meta: string; type: "parent" | "child"; name: string }[] = [];
-
-  const flushGroup = (label: string) => {
-    if (group.length === 0) return;
-    const children = group.filter((g) => g.type === "child");
-    let childIdx = 0;
-    for (const entry of group) {
-      if (entry.type === "parent") {
-        lines.push(`${entry.meta}\t\u{1F4C2} ${label}`);
-      } else {
-        childIdx++;
-        const connector = childIdx === children.length ? "\u2514\u2500\u2500" : "\u251C\u2500\u2500";
-        lines.push(`${entry.meta}\t   ${connector} ${entry.name}`);
-      }
-    }
-  };
-
-  for (const p of projects) {
-    if (p.label !== currentLabel) {
-      flushGroup(currentLabel);
-      currentLabel = p.label;
-      group = [];
-    }
-    const meta = `${p.host}|${p.projectPath}`;
-    if (p.projectPath === p.baseDir) {
-      group.push({ meta, type: "parent", name: basename(p.baseDir) });
-    } else {
-      group.push({ meta, type: "child", name: basename(p.projectPath) });
-    }
-  }
-  flushGroup(currentLabel);
-
-  return lines.join("\n");
-}
 
 async function fzfSelect(
   input: string,

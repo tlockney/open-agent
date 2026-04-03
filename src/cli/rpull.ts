@@ -3,7 +3,7 @@
 // Usage: rpull ~/Downloads/image.png           # copies to current directory
 //        rpull ~/Desktop/file.txt ~/dest/dir/  # copies to specific remote directory
 
-import { send, requireSock, checkResponse, getStringField, fail, HOST, HOME } from "./lib/oa.ts";
+import { send, requireSock, checkResponse, getStringField, fail, HOST, HOME } from "../lib/oa.ts";
 
 const USAGE = `Usage: rpull <local-path> [remote-dest]
 

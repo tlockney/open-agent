@@ -134,35 +134,57 @@ async function cmdSetupRemote(target: string): Promise<void> {
     hosts = [target];
   }
 
+  // Resolve paths relative to SCRIPT_DIR (src/cli/) → project root is ../../
+  const projectRoot = `${SCRIPT_DIR}/../..`;
+
   // Find open-agent-hook.sh
-  let hookPath = `${SCRIPT_DIR}/../open-agent-hook.sh`;
+  let hookPath = `${projectRoot}/open-agent-hook.sh`;
   if (!existsSync(hookPath)) {
     hookPath = `${HOME}/.local/share/open-agent/open-agent-hook.sh`;
   }
   if (!existsSync(hookPath)) fail("Cannot find open-agent-hook.sh");
 
-  // Build tarball
+  // Find oa-wrapper.sh
+  let wrapperPath = `${projectRoot}/oa-wrapper.sh`;
+  if (!existsSync(wrapperPath)) {
+    wrapperPath = `${HOME}/.local/share/open-agent/oa-wrapper.sh`;
+  }
+  if (!existsSync(wrapperPath)) fail("Cannot find oa-wrapper.sh");
+
+  // Build tarball with new src/ layout
   step("Building deploy package...");
   const tmpDir = Deno.makeTempDirSync();
 
-  // Create directory structure
-  await Deno.mkdir(`${tmpDir}/bin/lib`, { recursive: true });
+  // Create directory structure matching remote install layout
+  await Deno.mkdir(`${tmpDir}/src/lib`, { recursive: true });
+  await Deno.mkdir(`${tmpDir}/src/cli`, { recursive: true });
 
-  // Copy remote scripts
-  const remoteScripts = ["ropen", "rcode", "rcopy", "rpaste", "rnotify", "rop", "rpush", "rpull"];
-  for (const script of remoteScripts) {
-    const src = `${SCRIPT_DIR}/${script}`;
-    if (existsSync(src)) {
-      await Deno.copyFile(src, `${tmpDir}/bin/${script}`);
+  // Copy shared library modules
+  const libDir = `${SCRIPT_DIR}/../lib`;
+  for await (const entry of Deno.readDir(libDir)) {
+    if (entry.isFile && entry.name.endsWith(".ts") && !entry.name.endsWith("_test.ts")) {
+      await Deno.copyFile(`${libDir}/${entry.name}`, `${tmpDir}/src/lib/${entry.name}`);
     }
   }
-  await Deno.copyFile(`${SCRIPT_DIR}/lib/oa.ts`, `${tmpDir}/bin/lib/oa.ts`);
+
+  // Copy remote CLI scripts
+  const remoteScripts = ["ropen", "rcode", "rcopy", "rpaste", "rnotify", "rop", "rpush", "rpull"];
+  for (const script of remoteScripts) {
+    const src = `${SCRIPT_DIR}/${script}.ts`;
+    if (existsSync(src)) {
+      await Deno.copyFile(src, `${tmpDir}/src/cli/${script}.ts`);
+    }
+  }
+
   await Deno.copyFile(hookPath, `${tmpDir}/open-agent-hook.sh`);
+  await Deno.copyFile(wrapperPath, `${tmpDir}/oa-wrapper.sh`);
 
   // Create tarball
   const tarball = `${tmpDir}/deploy.tar.gz`;
-  const tarResult = await run("tar", ["-czf", tarball, "-C", tmpDir, "bin", "open-agent-hook.sh"]);
+  const tarResult = await run("tar", ["-czf", tarball, "-C", tmpDir, "src", "open-agent-hook.sh", "oa-wrapper.sh"]);
   if (!tarResult.success) fail("Failed to create deploy tarball");
+
+  const remoteCmds = remoteScripts.join(" ");
 
   let failed = 0;
   for (const host of hosts) {
@@ -180,18 +202,23 @@ async function cmdSetupRemote(target: string): Promise<void> {
     }
 
     // Create remote directories
-    await run("ssh", [host, "mkdir -p ~/.local/bin/lib ~/.local/share/open-agent"]);
+    await run("ssh", [host, "mkdir -p ~/.local/bin ~/.local/share/open-agent"]);
 
     // Deploy tarball
     const tarballBytes = await Deno.readFile(tarball);
     const deployResult = await run("ssh", [
       host,
       "set -e; cd $(mktemp -d); tar xzf -; " +
-      "find bin -maxdepth 1 -type f -exec cp {} ~/.local/bin/ \\;; " +
-      "cp bin/lib/* ~/.local/bin/lib/; " +
+      // Install source tree
+      "rm -rf ~/.local/share/open-agent/src; " +
+      "cp -R src ~/.local/share/open-agent/src; " +
+      // Install hook
       "cp open-agent-hook.sh ~/.local/share/open-agent/; " +
-      "chmod +x ~/.local/bin/ropen ~/.local/bin/rcode ~/.local/bin/rcopy ~/.local/bin/rpaste " +
-      "~/.local/bin/rnotify ~/.local/bin/rop ~/.local/bin/rpush ~/.local/bin/rpull",
+      // Install busybox-style wrappers
+      `for cmd in ${remoteCmds}; do ` +
+      "cp oa-wrapper.sh ~/.local/bin/$cmd; " +
+      "chmod +x ~/.local/bin/$cmd; " +
+      "done",
     ], { stdin: "piped", input: tarballBytes });
 
     if (deployResult.success) {

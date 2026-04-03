@@ -103,26 +103,23 @@ fi
 echo ""
 echo "Installing files..."
 
-mkdir -p "$AGENT_DIR" "$BIN_DIR/lib" "$HOME/.remote-mounts"
+mkdir -p "$AGENT_DIR" "$BIN_DIR" "$HOME/.remote-mounts"
 
-# --- Copy agent ---
+# --- Copy source tree ---
 
-cp "$SCRIPT_DIR/open-agent-daemon.ts" "$AGENT_DIR/open-agent-daemon.ts"
-info "open-agent-daemon.ts → $AGENT_DIR/"
+# Remove stale source tree from previous install
+rm -rf "$AGENT_DIR/src"
+cp -R "$SCRIPT_DIR/src" "$AGENT_DIR/src"
+info "src/ → $AGENT_DIR/src/"
 
-# --- Copy bin scripts ---
+# --- Install CLI wrappers (busybox-style: same file, multiple names) ---
 
-for script in "$SCRIPT_DIR"/bin/*; do
-    [[ -d "$script" ]] && continue  # skip lib/ directory
-    cp "$script" "$BIN_DIR/"
-    chmod +x "$BIN_DIR/$(basename "$script")"
+LOCAL_CMDS="ropen rcopy rpaste rnotify rpush rpull rop rcode rtmux rproj open-agent"
+for cmd in $LOCAL_CMDS; do
+    cp "$SCRIPT_DIR/oa-wrapper.sh" "$BIN_DIR/$cmd"
+    chmod +x "$BIN_DIR/$cmd"
 done
-info "bin scripts → $BIN_DIR/"
-
-# --- Copy lib ---
-
-cp "$SCRIPT_DIR/bin/lib/oa.ts" "$BIN_DIR/lib/oa.ts"
-info "lib/oa.ts → $BIN_DIR/lib/"
+info "CLI wrappers → $BIN_DIR/ ($LOCAL_CMDS)"
 
 # --- Copy hook ---
 

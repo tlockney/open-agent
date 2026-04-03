@@ -4,7 +4,8 @@
 //        rpush -d ~/Desktop file.txt # copies to specific local directory
 
 import { parseArgs } from "jsr:@std/cli@1/parse-args";
-import { send, requireSock, checkResponse, getStringField, fail, HOST, HOME } from "./lib/oa.ts";
+import type { Message } from "../lib/messages.ts";
+import { send, requireSock, checkResponse, getStringField, fail, HOST, HOME } from "../lib/oa.ts";
 
 const USAGE = `Usage: rpush [options] <file>
 
@@ -41,13 +42,13 @@ try {
 }
 target = Deno.realPathSync(target);
 
-const msg: Record<string, unknown> = {
+const msg: Message = {
   action: "push",
   host: HOST,
   remoteHome: HOME,
   path: target,
+  ...(args.d && { dest: args.d }),
 };
-if (args.d) msg.dest = args.d;
 
 const response = await send(msg, 30);
 checkResponse(response);

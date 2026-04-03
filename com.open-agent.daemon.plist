@@ -7,15 +7,15 @@
 
     <key>ProgramArguments</key>
     <array>
-        <!-- Adjust path to deno if yours differs -->
-        <string>/Users/YOURUSER/.deno/bin/deno</string>
+        <!-- Use mise shim so the path survives deno version upgrades -->
+        <string>/Users/YOURUSER/.local/share/mise/shims/deno</string>
         <string>run</string>
         <string>--allow-read</string>
         <string>--allow-write</string>
         <string>--allow-run</string>
         <string>--allow-env</string>
         <string>--allow-net=unix,127.0.0.1:19876</string>
-        <string>/Users/YOURUSER/.local/share/open-agent/open-agent-daemon.ts</string>
+        <string>/Users/YOURUSER/.local/share/open-agent/src/daemon/main.ts</string>
     </array>
 
     <key>RunAtLoad</key>

@@ -1,0 +1,9 @@
+{
+  "tasks": {
+    "test": "deno test --allow-read --allow-env",
+    "check": "deno check src/daemon/main.ts src/lib/*.ts src/cli/*.ts"
+  },
+  "compilerOptions": {
+    "strict": true
+  }
+}

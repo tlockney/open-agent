@@ -4,7 +4,8 @@
 //        rop run --env-file .env -- command args...
 //        rop run -- command args...
 
-import { send, requireSock, checkResponse, getStringField, fail } from "./lib/oa.ts";
+import type { Message } from "../lib/messages.ts";
+import { send, requireSock, checkResponse, getStringField, fail } from "../lib/oa.ts";
 
 const USAGE = `Usage: rop [--account <account>] <subcommand> [options]
 

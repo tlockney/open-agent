@@ -5,7 +5,8 @@
 //        rnotify -s "Ping" "Title" "Message"
 
 import { parseArgs } from "jsr:@std/cli@1/parse-args";
-import { send, requireSock, checkResponse, fail } from "./lib/oa.ts";
+import type { Message } from "../lib/messages.ts";
+import { send, requireSock, checkResponse, fail } from "../lib/oa.ts";
 
 const USAGE = `Usage: rnotify [options] <title> [message]
 
@@ -32,13 +33,13 @@ if (positional.length === 0) fail("title required. See rnotify -h");
 
 requireSock();
 
-const msg: Record<string, unknown> = {
+const msg: Message = {
   action: "notify",
   title: String(positional[0]),
+  ...(positional[1] !== undefined && { message: String(positional[1]) }),
+  ...(args.u && { subtitle: args.u }),
+  ...(args.s && { sound: args.s }),
 };
-if (positional[1] !== undefined) msg.message = String(positional[1]);
-if (args.u) msg.subtitle = args.u;
-if (args.s) msg.sound = args.s;
 
 const response = await send(msg);
 checkResponse(response);

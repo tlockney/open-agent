@@ -5,6 +5,7 @@
 //   import { send, requireSock, fail, SOCK, HOST, HOME } from "./lib/oa.ts";
 
 import { existsSync } from "jsr:@std/fs@1/exists";
+import type { Message, Response, OkResponse } from "./messages.ts";
 
 export const HOME = Deno.env.get("HOME") ?? "";
 export const SOCK = Deno.env.get("OPEN_AGENT_SOCK") ?? "/tmp/open-agent.sock";
@@ -55,7 +56,10 @@ function connectWithTimeout(
 ): Promise<Deno.Conn> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("connect timeout")), ms);
-    Deno.connect(opts).then(
+    const connect = "path" in opts
+      ? Deno.connect(opts as Deno.UnixConnectOptions)
+      : Deno.connect(opts as Deno.ConnectOptions);
+    connect.then(
       (conn) => { clearTimeout(timer); resolve(conn); },
       (err) => { clearTimeout(timer); reject(err); },
     );
@@ -65,9 +69,9 @@ function connectWithTimeout(
 /** Send a message over a specific transport and return the parsed response. */
 async function sendVia(
   opts: Deno.ConnectOptions | Deno.UnixConnectOptions,
-  message: Record<string, unknown>,
+  message: Message,
   timeoutSec: number,
-): Promise<Record<string, unknown>> {
+): Promise<Response> {
   const conn = await connectWithTimeout(opts, CONNECT_TIMEOUT_MS);
   try {
     const payload = JSON.stringify(message) + "\n";
@@ -78,16 +82,16 @@ async function sendVia(
     const n = await conn.read(buf);
     clearTimeout(timer);
     if (!n) throw new Error("no response from agent");
-    return JSON.parse(new TextDecoder().decode(buf.subarray(0, n)).trim()) as Record<string, unknown>;
+    return JSON.parse(new TextDecoder().decode(buf.subarray(0, n)).trim()) as Response;
   } finally {
     try { conn.close(); } catch { /* already closed */ }
   }
 }
 
 export async function send(
-  message: Record<string, unknown>,
+  message: Message,
   timeoutSec = 5,
-): Promise<Record<string, unknown>> {
+): Promise<Response> {
   // Try Unix socket first. If the socket exists but the tunnel is dead
   // (common with SSH-forwarded sockets after a disconnect), the send will
   // time out and we fall through to TCP — no separate probe needed.
@@ -115,14 +119,14 @@ export async function send(
   }
 }
 
-export function checkResponse(response: Record<string, unknown>): void {
+export function checkResponse(response: Response): asserts response is OkResponse {
   if (response.ok !== true) {
-    const err = typeof response.error === "string" ? response.error : "unknown error";
-    fail(err);
+    fail(response.error);
   }
 }
 
-export function getStringField(response: Record<string, unknown>, key: string): string {
+export function getStringField(response: Response, key: string): string {
+  if (!response.ok) return "";
   const val = response[key];
   return typeof val === "string" ? val : "";
 }

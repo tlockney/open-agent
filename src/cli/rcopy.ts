@@ -3,7 +3,7 @@
 // Usage: echo "text" | rcopy
 //        cat file.txt | rcopy
 
-import { send, requireSock, checkResponse, fail } from "./lib/oa.ts";
+import { send, requireSock, checkResponse, fail } from "../lib/oa.ts";
 
 requireSock();
 
