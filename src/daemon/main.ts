@@ -9,7 +9,7 @@ import { MountManager, createRealDeps } from "./mount_manager.ts";
 import { initLog, log, closeLog } from "./logger.ts";
 import { handleMessage, type HandlerDeps } from "./handlers.ts";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 const HOME = Deno.env.get("HOME");
 if (!HOME) {
