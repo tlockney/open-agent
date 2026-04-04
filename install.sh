@@ -133,10 +133,11 @@ for cmd in $LOCAL_CMDS; do
 done
 info "CLI wrappers → $BIN_DIR/ ($LOCAL_CMDS)"
 
-# --- Copy hook ---
+# --- Copy hook and wrapper template ---
 
 cp "$SCRIPT_DIR/open-agent-hook.sh" "$AGENT_DIR/open-agent-hook.sh"
-info "open-agent-hook.sh → $AGENT_DIR/"
+cp "$SCRIPT_DIR/oa-wrapper.sh" "$AGENT_DIR/oa-wrapper.sh"
+info "open-agent-hook.sh, oa-wrapper.sh → $AGENT_DIR/"
 
 # --- Install launchd plist ---
 
