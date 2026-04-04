@@ -90,7 +90,7 @@ async function sendVia(
 
 export async function send(
   message: Message,
-  timeoutSec = 5,
+  timeoutSec = 10,
 ): Promise<Response> {
   // Try Unix socket first. If the socket exists but the tunnel is dead
   // (common with SSH-forwarded sockets after a disconnect), the send will
