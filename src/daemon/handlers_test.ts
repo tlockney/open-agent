@@ -24,11 +24,44 @@ const encoder = new TextEncoder();
 interface Call { cmd: string; args: string[] }
 
 /** Create a minimal MountManager with a fake mount already in place. */
-function createFakeMountManager(): MountManager {
+function createFakeMountManager(opts?: {
+  /** Make sshfs return failure on the Nth+1 invocation onward (1-indexed). */
+  failSshfsAfterCall?: number;
+}): MountManager {
+  // Track which mount points the fake considers "mounted" so isMountResponsive
+  // can correctly distinguish present vs. missing mounts across remount cycles.
+  const mounted = new Set<string>();
+  let sshfsCalls = 0;
+
+  const encoder = new TextEncoder();
   const deps: MountDeps = {
-    async runCommand(cmd) {
-      if (cmd === "sshfs") return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
-      if (cmd === "mount") return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
+    async runCommand(cmd, args) {
+      if (cmd === "sshfs") {
+        sshfsCalls++;
+        if (
+          opts?.failSshfsAfterCall !== undefined &&
+          sshfsCalls > opts.failSshfsAfterCall
+        ) {
+          return {
+            success: false,
+            stdout: new Uint8Array(),
+            stderr: encoder.encode("auth denied"),
+          };
+        }
+        const mp = args?.[1];
+        if (typeof mp === "string") mounted.add(mp);
+        return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
+      }
+      if (cmd === "mount") {
+        const list = [...mounted].map((mp) => `fakefs on ${mp}`).join("\n");
+        return { success: true, stdout: encoder.encode(list), stderr: new Uint8Array() };
+      }
+      if (cmd === "umount" || cmd === "diskutil") {
+        // Last arg is the mount point for both umount and diskutil unmount force.
+        const mp = args?.[args.length - 1];
+        if (typeof mp === "string") mounted.delete(mp);
+        return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
+      }
       return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
     },
     async mkdir() {},
@@ -44,13 +77,27 @@ function createFakeDeps(opts?: {
   commandResults?: Map<string, CommandResult>;
   statResult?: { isDirectory: boolean };
   statThrows?: boolean;
+  /** Throw on stat for any path matching one of these substrings. */
+  statThrowsFor?: string[];
+  /** Custom stat function — overrides the other stat options entirely. */
+  stat?: (path: string) => Promise<{ isDirectory: boolean }>;
+  /** Custom mount manager — overrides the default fake. */
+  mountManager?: MountManager;
 }): { deps: HandlerDeps; calls: Call[]; logs: string[]; copies: Array<{ src: string; dest: string }> } {
   const calls: Call[] = [];
   const logs: string[] = [];
   const copies: Array<{ src: string; dest: string }> = [];
 
+  const defaultStat = async (path: string) => {
+    if (opts?.statThrowsFor?.some((s) => path.includes(s))) {
+      throw new Error("not found");
+    }
+    if (opts?.statThrows) throw new Error("not found");
+    return opts?.statResult ?? { isDirectory: false };
+  };
+
   const deps: HandlerDeps = {
-    mountManager: createFakeMountManager(),
+    mountManager: opts?.mountManager ?? createFakeMountManager(),
     async runCommand(cmd, args) {
       calls.push({ cmd, args });
       const result = opts?.commandResults?.get(cmd);
@@ -67,10 +114,7 @@ function createFakeDeps(opts?: {
       } satisfies SpawnedProcess;
     },
     async copyFile(src, dest) { copies.push({ src, dest }); },
-    async stat(_path) {
-      if (opts?.statThrows) throw new Error("not found");
-      return opts?.statResult ?? { isDirectory: false };
-    },
+    stat: opts?.stat ?? defaultStat,
     log(msg) { logs.push(msg); },
     home: "/Users/test",
     version: "0.3.0",
@@ -133,8 +177,9 @@ Deno.test("handleOpen: passes -a flag for app", async () => {
   assertEquals(openCalls[0].args, ["-a", "Marked 2", "/mnt/h1/doc.md"]);
 });
 
-Deno.test("handleOpen: returns path_not_found when target is missing", async () => {
-  const { deps, calls } = createFakeDeps({ statThrows: true });
+Deno.test("handleOpen: returns path_not_found when target is missing but mount is alive", async () => {
+  // statThrowsFor: only the missing file path throws; mount root stat succeeds
+  const { deps, calls } = createFakeDeps({ statThrowsFor: ["missing.md"] });
   await deps.mountManager.ensureMount("h1", "/home/u");
 
   const result = JSON.parse(
@@ -148,6 +193,52 @@ Deno.test("handleOpen: returns path_not_found when target is missing", async () 
   assertEquals(result.error.host, "h1");
   // Should not have attempted to invoke `open`.
   assertEquals(calls.filter((c) => c.cmd === "open").length, 0);
+});
+
+Deno.test("handleOpen: returns mount_stale when remount itself fails", async () => {
+  // First sshfs call (initial mount) succeeds; the remount call after
+  // detecting a dead mount fails — recovery exhausted.
+  const mountManager = createFakeMountManager({ failSshfsAfterCall: 1 });
+  const { deps, calls } = createFakeDeps({ statThrows: true, mountManager });
+  await deps.mountManager.ensureMount("h1", "/home/u");
+
+  const result = JSON.parse(
+    await handleOpen(
+      { action: "open", host: "h1", remoteHome: "/home/u", path: "/home/u/f.md" },
+      deps,
+    ),
+  );
+  assertEquals(result.ok, false);
+  assertEquals(result.error.code, "mount_stale");
+  assertEquals(result.error.host, "h1");
+  assertEquals(result.error.recovery, "ra reset h1");
+  assertEquals(calls.filter((c) => c.cmd === "open").length, 0);
+});
+
+Deno.test("handleOpen: silently recovers when remount restores the path", async () => {
+  // First stat (path) throws, second stat (mount root) throws, after
+  // remount the third stat (path) succeeds — silent recovery.
+  let statCount = 0;
+  const stat = async (_path: string) => {
+    statCount++;
+    if (statCount <= 2) throw new Error("dead mount");
+    return { isDirectory: false };
+  };
+  const { deps, calls, logs } = createFakeDeps({ stat });
+  await deps.mountManager.ensureMount("h1", "/home/u");
+
+  const result = JSON.parse(
+    await handleOpen(
+      { action: "open", host: "h1", remoteHome: "/home/u", path: "/home/u/f.md" },
+      deps,
+    ),
+  );
+  assertEquals(result.ok, true);
+  assertEquals(result.localPath, "/mnt/h1/f.md");
+  // open was invoked exactly once after the recovery.
+  assertEquals(calls.filter((c) => c.cmd === "open").length, 1);
+  // Recovery log line was emitted.
+  assertEquals(logs.some((l) => l.includes("died silently")), true);
 });
 
 Deno.test("handleOpen: returns error on command failure", async () => {
@@ -286,8 +377,8 @@ Deno.test("handlePush: copies file to Downloads", async () => {
   assertEquals(copies[0], { src: "/mnt/h1/build.tar.gz", dest: "/Users/test/Downloads/build.tar.gz" });
 });
 
-Deno.test("handlePush: returns path_not_found when source is missing", async () => {
-  const { deps, copies } = createFakeDeps({ statThrows: true });
+Deno.test("handlePush: returns path_not_found when source is missing but mount is alive", async () => {
+  const { deps, copies } = createFakeDeps({ statThrowsFor: ["missing.tar.gz"] });
   await deps.mountManager.ensureMount("h1", "/home/u");
 
   const result = JSON.parse(
@@ -299,7 +390,23 @@ Deno.test("handlePush: returns path_not_found when source is missing", async () 
   assertEquals(result.ok, false);
   assertEquals(result.error.code, "path_not_found");
   assertEquals(result.error.host, "h1");
-  // Should not have attempted to copy.
+  assertEquals(copies.length, 0);
+});
+
+Deno.test("handlePush: returns mount_stale when remount itself fails", async () => {
+  const mountManager = createFakeMountManager({ failSshfsAfterCall: 1 });
+  const { deps, copies } = createFakeDeps({ statThrows: true, mountManager });
+  await deps.mountManager.ensureMount("h1", "/home/u");
+
+  const result = JSON.parse(
+    await handlePush(
+      { action: "push", host: "h1", remoteHome: "/home/u", path: "/home/u/build.tar.gz" },
+      deps,
+    ),
+  );
+  assertEquals(result.ok, false);
+  assertEquals(result.error.code, "mount_stale");
+  assertEquals(result.error.recovery, "ra reset h1");
   assertEquals(copies.length, 0);
 });
 

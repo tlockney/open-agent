@@ -3,7 +3,7 @@
 import type { ErrorCode, Message } from "../lib/messages.ts";
 import { makeError } from "../lib/messages.ts";
 import { translatePath } from "../lib/path_utils.ts";
-import type { MountManager } from "./mount_manager.ts";
+import type { MountManager, MountState } from "./mount_manager.ts";
 
 /** Command result from running an external process. */
 export interface CommandResult {
@@ -45,6 +45,75 @@ function err(
   return JSON.stringify({ ok: false, error: makeError(code, message, opts) });
 }
 
+/**
+ * Ensure the mount is up AND the requested path exists on it. If the path
+ * stat fails, probe the mount root to disambiguate "file genuinely missing"
+ * from "mount silently broke between ensureMount and stat". When the mount
+ * itself is dead, force a remount and retry once before giving up.
+ */
+async function verifyMountAndPath(
+  deps: HandlerDeps,
+  host: string,
+  remoteHome: string,
+  remotePath: string,
+):
+  | Promise<
+    | { ok: true; localPath: string; state: MountState }
+    | { ok: false; code: "path_not_found" | "mount_stale"; message: string }
+  >
+{
+  let state = await deps.mountManager.ensureMount(host, remoteHome);
+  let localPath = translatePath(remotePath, state);
+
+  try {
+    await deps.stat(localPath);
+    return { ok: true, localPath, state };
+  } catch { /* fall through */ }
+
+  // Path stat failed. Probe the mount root to disambiguate.
+  let mountAlive = true;
+  try {
+    await deps.stat(state.mountPoint);
+  } catch {
+    mountAlive = false;
+  }
+
+  if (mountAlive) {
+    return {
+      ok: false,
+      code: "path_not_found",
+      message: `path does not exist: ${remotePath}`,
+    };
+  }
+
+  // Mount silently broke. Force remount and retry once.
+  deps.log(`Mount for ${host} died silently; forcing remount`);
+  try {
+    await deps.mountManager.unmountHost(host);
+    state = await deps.mountManager.ensureMount(host, remoteHome);
+    localPath = translatePath(remotePath, state);
+  } catch (e) {
+    return {
+      ok: false,
+      code: "mount_stale",
+      message: `mount for ${host} could not be recovered: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    };
+  }
+
+  try {
+    await deps.stat(localPath);
+    return { ok: true, localPath, state };
+  } catch {
+    return {
+      ok: false,
+      code: "path_not_found",
+      message: `path does not exist: ${remotePath}`,
+    };
+  }
+}
+
 // --- Handlers ---
 
 export async function handleConnect(
@@ -76,19 +145,13 @@ export async function handleOpen(
   msg: Extract<Message, { action: "open" }>,
   deps: HandlerDeps,
 ): Promise<string> {
-  const state = await deps.mountManager.ensureMount(msg.host, msg.remoteHome);
-  const localPath = translatePath(msg.path, state);
-
-  // Verify the translated path actually exists on the mount before
-  // shelling out. Without this, a stale or partial mount can cause
-  // `open` to silently fail with a misleading "file not found".
-  try {
-    await deps.stat(localPath);
-  } catch {
-    return err("path_not_found", `path does not exist: ${msg.path}`, {
-      host: msg.host,
-    });
+  const verified = await verifyMountAndPath(deps, msg.host, msg.remoteHome, msg.path);
+  if (!verified.ok) {
+    const opts: { host: string; recovery?: string } = { host: msg.host };
+    if (verified.code === "mount_stale") opts.recovery = `ra reset ${msg.host}`;
+    return err(verified.code, verified.message, opts);
   }
+  const { localPath } = verified;
 
   const args: string[] = [];
   if (msg.app) args.push("-a", msg.app);
@@ -181,20 +244,16 @@ export async function handlePush(
   msg: Extract<Message, { action: "push" }>,
   deps: HandlerDeps,
 ): Promise<string> {
-  const state = await deps.mountManager.ensureMount(msg.host, msg.remoteHome);
-  const srcPath = translatePath(msg.path, state);
+  const verified = await verifyMountAndPath(deps, msg.host, msg.remoteHome, msg.path);
+  if (!verified.ok) {
+    const opts: { host: string; recovery?: string } = { host: msg.host };
+    if (verified.code === "mount_stale") opts.recovery = `ra reset ${msg.host}`;
+    return err(verified.code, verified.message, opts);
+  }
+  const srcPath = verified.localPath;
   const dest = msg.dest ?? `${deps.home}/Downloads`;
   const fileName = srcPath.split("/").pop()!;
   const destPath = `${dest}/${fileName}`;
-
-  // Verify source exists on the mount before attempting to copy.
-  try {
-    await deps.stat(srcPath);
-  } catch {
-    return err("path_not_found", `source path does not exist: ${msg.path}`, {
-      host: msg.host,
-    });
-  }
 
   deps.log(`Push: ${srcPath} → ${destPath}`);
   await deps.copyFile(srcPath, destPath);
