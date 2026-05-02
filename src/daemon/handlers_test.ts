@@ -12,6 +12,7 @@ import {
   handlePull,
   handleOpRead,
   handleOpResolve,
+  handlePing,
   handleStatus,
   type HandlerDeps,
   type CommandResult,
@@ -568,4 +569,17 @@ Deno.test("handleStatus: includes mount info", async () => {
   assertEquals(result.mounts.h1.mountPoint, "/mnt/h1");
   assertEquals(result.mounts.h1.activeSessions, 1);
   assertEquals(result.mounts.h1.sessions, ["s1"]);
+});
+
+// --- ping ---
+
+Deno.test("handlePing: returns pong and version without touching deps", () => {
+  const { deps, calls } = createFakeDeps();
+  const result = JSON.parse(handlePing(deps));
+  assertEquals(result.ok, true);
+  assertEquals(result.pong, true);
+  assertEquals(result.version, "0.3.0");
+  // ping must NOT shell out to anything — that would defeat its purpose
+  // as a "is the daemon hung?" probe.
+  assertEquals(calls.length, 0);
 });

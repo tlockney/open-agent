@@ -1,7 +1,9 @@
 #!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net=127.0.0.1:19876
 // ropen - remote open wrapper
 // Sends open/vscode requests to the local open-agent via Unix socket or TCP.
-// Falls back to native open if the agent is unreachable.
+// Surfaces a structured error (and recovery hint) when the agent is
+// unreachable instead of silently falling back to native /usr/bin/open
+// — a remote-mount path opened locally just produces nonsense.
 
 import { parseArgs } from "jsr:@std/cli@1/parse-args";
 import type { Message } from "../lib/messages.ts";
@@ -75,20 +77,15 @@ if (isUrl) {
 let response: import("../lib/messages.ts").Response;
 try {
   response = await send(msg);
-} catch {
-  // Agent unreachable — fall back to native open if available
-  try {
-    Deno.statSync("/usr/bin/open");
-    console.error("ropen: agent unreachable, falling back to native open");
-    const openArgs = app ? ["-a", app, target] : [target];
-    const { code } = await new Deno.Command("/usr/bin/open", {
-      args: openArgs,
-      stdin: "inherit", stdout: "inherit", stderr: "inherit",
-    }).output();
-    Deno.exit(code);
-  } catch {
-    fail("agent unreachable and no native open available.\nropen: the SSH tunnel may have died. Reconnect SSH to restore.");
-  }
+} catch (e) {
+  // No native-open fallback — that path silently produced "file not
+  // found" errors when the SSHFS mount was gone. Surface the real cause
+  // and point at the diagnostic command instead.
+  const detail = e instanceof Error ? e.message : String(e);
+  fail(
+    `agent unreachable: ${detail}\n` +
+      `  → SSH tunnel may have died. Reconnect SSH, or run 'ra ping' to diagnose.`,
+  );
 }
 
 // Handle response

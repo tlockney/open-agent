@@ -126,7 +126,7 @@ info "src/ → $AGENT_DIR/src/"
 
 # --- Install CLI wrappers (busybox-style: same file, multiple names) ---
 
-LOCAL_CMDS="ropen rcopy rpaste rnotify rpush rpull rop rcode rtmux rproj open-agent"
+LOCAL_CMDS="ropen rcopy rpaste rnotify rpush rpull rop rcode rtmux rproj ra open-agent"
 for cmd in $LOCAL_CMDS; do
     cp "$SCRIPT_DIR/oa-wrapper.sh" "$BIN_DIR/$cmd"
     chmod +x "$BIN_DIR/$cmd"

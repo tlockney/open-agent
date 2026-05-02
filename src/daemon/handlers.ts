@@ -335,6 +335,15 @@ export async function handleOpResolve(
   return ok({ resolved });
 }
 
+/**
+ * Lightweight liveness probe — no mount checks, no external commands.
+ * Used by `ra ping` and CLI pre-flight to distinguish "agent down" from
+ * "agent up but slow on a real request".
+ */
+export function handlePing(deps: HandlerDeps): string {
+  return ok({ pong: true, version: deps.version });
+}
+
 export function handleStatus(deps: HandlerDeps): string {
   const status = Object.fromEntries(
     [...deps.mountManager.getAllMounts().entries()].map(([host, state]) => [
@@ -368,5 +377,6 @@ export async function handleMessage(msg: Message, deps: HandlerDeps): Promise<st
     case "op-read": return handleOpRead(msg, deps);
     case "op-resolve": return handleOpResolve(msg, deps);
     case "status": return handleStatus(deps);
+    case "ping": return handlePing(deps);
   }
 }

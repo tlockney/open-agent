@@ -168,7 +168,7 @@ async function cmdSetupRemote(target: string): Promise<void> {
   }
 
   // Copy remote CLI scripts
-  const remoteScripts = ["ropen", "rcode", "rcopy", "rpaste", "rnotify", "rop", "rpush", "rpull"];
+  const remoteScripts = ["ropen", "rcode", "rcopy", "rpaste", "rnotify", "rop", "rpush", "rpull", "ra"];
   for (const script of remoteScripts) {
     const src = `${SCRIPT_DIR}/${script}.ts`;
     if (existsSync(src)) {

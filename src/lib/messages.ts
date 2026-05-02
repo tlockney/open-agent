@@ -17,7 +17,8 @@ export type Message =
   | { action: "pull"; host: string; remoteHome: string; localPath: string; remoteDest: string }
   | { action: "op-read"; ref: string; account?: string }
   | { action: "op-resolve"; refs: Record<string, string>; account?: string }
-  | { action: "status" };
+  | { action: "status" }
+  | { action: "ping" };
 
 // --- Response types ---
 
@@ -151,6 +152,8 @@ export function parseMessage(raw: unknown): Message {
       break;
     }
     case "status":
+      break;
+    case "ping":
       break;
     default:
       throw new Error(`Unknown action: ${action}`);
