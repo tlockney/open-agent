@@ -12,6 +12,7 @@ import {
   handlePull,
   handleOpRead,
   handleOpResolve,
+  handleDoctor,
   handlePing,
   handleReset,
   handleStatus,
@@ -29,6 +30,8 @@ interface Call { cmd: string; args: string[] }
 function createFakeMountManager(opts?: {
   /** Make sshfs return failure on the Nth+1 invocation onward (1-indexed). */
   failSshfsAfterCall?: number;
+  /** Make `stat <mountpoint>` (used by isMountResponsive) return failure. */
+  failStat?: boolean;
 }): MountManager {
   // Track which mount points the fake considers "mounted" so isMountResponsive
   // can correctly distinguish present vs. missing mounts across remount cycles.
@@ -63,6 +66,9 @@ function createFakeMountManager(opts?: {
         const mp = args?.[args.length - 1];
         if (typeof mp === "string") mounted.delete(mp);
         return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
+      }
+      if (cmd === "stat" && opts?.failStat) {
+        return { success: false, stdout: new Uint8Array(), stderr: new Uint8Array() };
       }
       return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
     },
@@ -618,6 +624,41 @@ Deno.test("handleReset: unknown host is a no-op (not an error)", async () => {
   assertEquals(result.reset, []);
   // Unrelated mount untouched.
   assertEquals(deps.mountManager.getMount("h1") !== undefined, true);
+});
+
+// --- doctor ---
+
+Deno.test("handleDoctor: empty when no mounts exist", async () => {
+  const { deps } = createFakeDeps();
+  const result = JSON.parse(await handleDoctor(deps));
+  assertEquals(result.ok, true);
+  assertEquals(result.version, "0.3.0");
+  assertEquals(result.mounts, {});
+});
+
+Deno.test("handleDoctor: marks responsive mounts and includes session info", async () => {
+  const { deps } = createFakeDeps();
+  const state = await deps.mountManager.ensureMount("h1", "/home/u");
+  state.sessions.add("s1");
+  state.sessions.add("s2");
+
+  const result = JSON.parse(await handleDoctor(deps));
+  assertEquals(result.ok, true);
+  assertEquals(result.mounts.h1.responsive, true);
+  assertEquals(result.mounts.h1.activeSessions, 2);
+  assertEquals(result.mounts.h1.mountPoint, "/mnt/h1");
+  assertEquals(result.mounts.h1.pendingUnmount, false);
+});
+
+Deno.test("handleDoctor: marks unresponsive mounts when stat probe fails", async () => {
+  // Mount manager that creates the mount but stat probes will fail.
+  const mountManager = createFakeMountManager({ failStat: true });
+  const { deps } = createFakeDeps({ mountManager });
+  await deps.mountManager.ensureMount("h1", "/home/u");
+
+  const result = JSON.parse(await handleDoctor(deps));
+  assertEquals(result.ok, true);
+  assertEquals(result.mounts.h1.responsive, false);
 });
 
 // --- ping ---

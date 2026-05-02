@@ -345,6 +345,32 @@ export function handlePing(deps: HandlerDeps): string {
 }
 
 /**
+ * Per-mount diagnostic probe — actively checks whether each mount is
+ * responsive (via stat with timeout). Backs `ra doctor` so the user
+ * can see at a glance which mounts are healthy vs. broken.
+ */
+export async function handleDoctor(deps: HandlerDeps): Promise<string> {
+  const mounts: Record<string, {
+    mountPoint: string;
+    remoteHome: string;
+    responsive: boolean;
+    activeSessions: number;
+    pendingUnmount: boolean;
+  }> = {};
+  for (const [host, state] of deps.mountManager.getAllMounts()) {
+    const responsive = await deps.mountManager.isMountResponsive(state.mountPoint);
+    mounts[host] = {
+      mountPoint: state.mountPoint,
+      remoteHome: state.remoteHome,
+      responsive,
+      activeSessions: state.sessions.size,
+      pendingUnmount: state.unmountTimer !== undefined,
+    };
+  }
+  return ok({ version: deps.version, mounts });
+}
+
+/**
  * Tear down mount(s) and purge their in-memory session state. Used by
  * `ra reset` to recover from a stale mount when the daemon's automatic
  * remount-on-demand can't get it back to a working state.
@@ -402,5 +428,6 @@ export async function handleMessage(msg: Message, deps: HandlerDeps): Promise<st
     case "status": return handleStatus(deps);
     case "ping": return handlePing(deps);
     case "reset": return handleReset(msg, deps);
+    case "doctor": return handleDoctor(deps);
   }
 }

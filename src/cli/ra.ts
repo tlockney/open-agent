@@ -6,8 +6,17 @@
 // either the local Mac or a remote SSH session — same code path either
 // way; the transport layer figures out where the daemon lives.
 
+import { existsSync } from "jsr:@std/fs@1/exists";
 import type { Message, Response } from "../lib/messages.ts";
-import { fail, formatErrorMessage, send } from "../lib/oa.ts";
+import {
+  fail,
+  formatErrorMessage,
+  HOST,
+  send,
+  SOCK,
+  TCP_HOST,
+  TCP_PORT,
+} from "../lib/oa.ts";
 
 const USAGE = `Usage: ra <command> [args]
 
@@ -16,9 +25,8 @@ Commands:
   status            Daemon health summary (version + mount count)
   mounts            List active mounts and their state
   reset [host]      Tear down all mounts (or just one) and purge sessions
-  help              Show this help
-
-Additional commands (doctor, logs) are coming.`;
+  doctor            Full diagnostic: transport, daemon, per-mount probes
+  help              Show this help`;
 
 const subcommand = Deno.args[0] ?? "";
 
@@ -44,6 +52,9 @@ switch (subcommand) {
     break;
   case "reset":
     await runReset(Deno.args[1]);
+    break;
+  case "doctor":
+    await runDoctor();
     break;
   default:
     fail(`unknown command: ${subcommand}\n\n${USAGE}`);
@@ -126,5 +137,89 @@ async function runReset(host?: string): Promise<void> {
     console.log(host ? `No active mount for ${host}.` : "No active mounts to reset.");
   } else {
     console.log(`Reset ${reset.length} mount(s): ${reset.join(", ")}`);
+  }
+}
+
+interface DoctorMountInfo {
+  mountPoint: string;
+  remoteHome: string;
+  responsive: boolean;
+  activeSessions: number;
+  pendingUnmount: boolean;
+}
+
+async function runDoctor(): Promise<void> {
+  console.log("open-agent doctor");
+  console.log("");
+
+  // Client-side transport info — visible regardless of daemon state.
+  console.log("Transport:");
+  console.log(`  socket:   ${SOCK} ${existsSync(SOCK) ? "(present)" : "(missing)"}`);
+  console.log(`  tcp:      ${TCP_HOST}:${TCP_PORT}`);
+  console.log(`  host id:  ${HOST}`);
+  console.log("");
+
+  // Daemon reachability via ping.
+  const pingStart = Date.now();
+  let pingOk = false;
+  let pingDetail = "";
+  let version = "?";
+  try {
+    const r = await send({ action: "ping" }, 3);
+    if (r.ok) {
+      pingOk = true;
+      version = typeof r.version === "string" ? r.version : "?";
+    } else {
+      pingDetail = formatErrorMessage(r.error);
+    }
+  } catch (e) {
+    pingDetail = e instanceof Error ? e.message : String(e);
+  }
+  const pingMs = Date.now() - pingStart;
+
+  if (pingOk) {
+    console.log(`Daemon: ✓ reachable (${pingMs}ms, v${version})`);
+  } else {
+    console.log(`Daemon: ✗ unreachable — ${pingDetail}`);
+    console.log("");
+    console.log("→ Reconnect SSH (if remote) or check the daemon launchd service.");
+    Deno.exit(1);
+  }
+
+  // Per-mount diagnostic probe.
+  let docResp: Response;
+  try {
+    docResp = await send({ action: "doctor" }, 10);
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    console.log(`Mounts: ✗ probe failed — ${detail}`);
+    Deno.exit(1);
+  }
+  if (!docResp.ok) {
+    console.log(`Mounts: ✗ probe failed — ${formatErrorMessage(docResp.error)}`);
+    Deno.exit(1);
+  }
+
+  const mounts = (docResp.mounts as Record<string, DoctorMountInfo> | undefined) ??
+    {};
+  const entries = Object.entries(mounts).sort(([a], [b]) => a.localeCompare(b));
+
+  if (entries.length === 0) {
+    console.log("Mounts: (none active)");
+    return;
+  }
+
+  console.log(`Mounts:`);
+  for (const [host, info] of entries) {
+    const tag = info.responsive ? "✓" : "✗";
+    let detail: string;
+    if (info.responsive) {
+      const session = info.activeSessions === 1 ? "session" : "sessions";
+      detail = `${info.activeSessions} ${session}`;
+      if (info.pendingUnmount) detail += ", pending unmount";
+    } else {
+      detail = `unresponsive — try 'ra reset ${host}'`;
+    }
+    console.log(`  ${tag} ${host}: ${info.mountPoint} (${detail})`);
   }
 }
