@@ -13,6 +13,7 @@ import {
   handleOpRead,
   handleOpResolve,
   handlePing,
+  handleReset,
   handleStatus,
   type HandlerDeps,
   type CommandResult,
@@ -569,6 +570,54 @@ Deno.test("handleStatus: includes mount info", async () => {
   assertEquals(result.mounts.h1.mountPoint, "/mnt/h1");
   assertEquals(result.mounts.h1.activeSessions, 1);
   assertEquals(result.mounts.h1.sessions, ["s1"]);
+});
+
+// --- reset ---
+
+Deno.test("handleReset: with no host tears down all mounts", async () => {
+  const { deps } = createFakeDeps();
+  await deps.mountManager.ensureMount("h1", "/home/u");
+  await deps.mountManager.ensureMount("h2", "/home/u");
+
+  const result = JSON.parse(
+    await handleReset({ action: "reset" }, deps),
+  );
+  assertEquals(result.ok, true);
+  assertEquals((result.reset as string[]).sort(), ["h1", "h2"]);
+  assertEquals([...deps.mountManager.getAllMounts().keys()], []);
+});
+
+Deno.test("handleReset: with host scopes to that host only", async () => {
+  const { deps } = createFakeDeps();
+  await deps.mountManager.ensureMount("h1", "/home/u");
+  await deps.mountManager.ensureMount("h2", "/home/u");
+
+  const result = JSON.parse(
+    await handleReset({ action: "reset", host: "h1" }, deps),
+  );
+  assertEquals(result.ok, true);
+  assertEquals(result.reset, ["h1"]);
+  assertEquals([...deps.mountManager.getAllMounts().keys()], ["h2"]);
+});
+
+Deno.test("handleReset: returns empty list when nothing to reset", async () => {
+  const { deps } = createFakeDeps();
+  const result = JSON.parse(await handleReset({ action: "reset" }, deps));
+  assertEquals(result.ok, true);
+  assertEquals(result.reset, []);
+});
+
+Deno.test("handleReset: unknown host is a no-op (not an error)", async () => {
+  const { deps } = createFakeDeps();
+  await deps.mountManager.ensureMount("h1", "/home/u");
+
+  const result = JSON.parse(
+    await handleReset({ action: "reset", host: "ghost" }, deps),
+  );
+  assertEquals(result.ok, true);
+  assertEquals(result.reset, []);
+  // Unrelated mount untouched.
+  assertEquals(deps.mountManager.getMount("h1") !== undefined, true);
 });
 
 // --- ping ---

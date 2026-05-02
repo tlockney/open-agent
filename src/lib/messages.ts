@@ -18,7 +18,8 @@ export type Message =
   | { action: "op-read"; ref: string; account?: string }
   | { action: "op-resolve"; refs: Record<string, string>; account?: string }
   | { action: "status" }
-  | { action: "ping" };
+  | { action: "ping" }
+  | { action: "reset"; host?: string };
 
 // --- Response types ---
 
@@ -154,6 +155,11 @@ export function parseMessage(raw: unknown): Message {
     case "status":
       break;
     case "ping":
+      break;
+    case "reset":
+      if (obj.host !== undefined && typeof obj.host !== "string") {
+        throw new Error("Invalid 'host' field");
+      }
       break;
     default:
       throw new Error(`Unknown action: ${action}`);

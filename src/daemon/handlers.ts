@@ -344,6 +344,29 @@ export function handlePing(deps: HandlerDeps): string {
   return ok({ pong: true, version: deps.version });
 }
 
+/**
+ * Tear down mount(s) and purge their in-memory session state. Used by
+ * `ra reset` to recover from a stale mount when the daemon's automatic
+ * remount-on-demand can't get it back to a working state.
+ */
+export async function handleReset(
+  msg: Extract<Message, { action: "reset" }>,
+  deps: HandlerDeps,
+): Promise<string> {
+  const targets = msg.host
+    ? [msg.host]
+    : [...deps.mountManager.getAllMounts().keys()];
+  const reset: string[] = [];
+  for (const host of targets) {
+    if (deps.mountManager.getMount(host)) {
+      await deps.mountManager.unmountHost(host);
+      reset.push(host);
+    }
+  }
+  deps.log(`Reset: ${reset.length === 0 ? "(no mounts to reset)" : reset.join(", ")}`);
+  return ok({ reset });
+}
+
 export function handleStatus(deps: HandlerDeps): string {
   const status = Object.fromEntries(
     [...deps.mountManager.getAllMounts().entries()].map(([host, state]) => [
@@ -378,5 +401,6 @@ export async function handleMessage(msg: Message, deps: HandlerDeps): Promise<st
     case "op-resolve": return handleOpResolve(msg, deps);
     case "status": return handleStatus(deps);
     case "ping": return handlePing(deps);
+    case "reset": return handleReset(msg, deps);
   }
 }
