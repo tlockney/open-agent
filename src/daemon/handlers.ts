@@ -1,6 +1,7 @@
 // handlers.ts — Per-action message handlers with dependency injection.
 
-import type { Message } from "../lib/messages.ts";
+import type { ErrorCode, Message } from "../lib/messages.ts";
+import { makeError } from "../lib/messages.ts";
 import { translatePath } from "../lib/path_utils.ts";
 import type { MountManager } from "./mount_manager.ts";
 
@@ -36,8 +37,12 @@ function ok(data?: Record<string, unknown>): string {
   return JSON.stringify({ ok: true, ...data });
 }
 
-function err(error: string): string {
-  return JSON.stringify({ ok: false, error });
+function err(
+  code: ErrorCode,
+  message: string,
+  opts?: { host?: string; recovery?: string },
+): string {
+  return JSON.stringify({ ok: false, error: makeError(code, message, opts) });
 }
 
 // --- Handlers ---
@@ -82,7 +87,7 @@ export async function handleOpen(
   const result = await deps.runCommand("open", args);
 
   if (!result.success) {
-    return err(`open failed: ${decoder.decode(result.stderr)}`);
+    return err("internal", `open failed: ${decoder.decode(result.stderr)}`);
   }
   return ok({ localPath });
 }
@@ -96,7 +101,7 @@ export async function handleOpenVscode(
   const result = await deps.runCommand("code", args);
 
   if (!result.success) {
-    return err(`code failed: ${decoder.decode(result.stderr)}`);
+    return err("internal", `code failed: ${decoder.decode(result.stderr)}`);
   }
   return ok();
 }
@@ -111,7 +116,7 @@ export async function handleCopy(
   await writer.close();
   const { success } = await proc.output();
   if (!success) {
-    return err("pbcopy failed");
+    return err("internal", "pbcopy failed");
   }
   deps.log(`Copied ${msg.content.length} bytes to clipboard`);
   return ok({ bytes: msg.content.length });
@@ -122,7 +127,7 @@ export async function handlePaste(
 ): Promise<string> {
   const result = await deps.runCommand("pbpaste", []);
   if (!result.success) {
-    return err("pbpaste failed");
+    return err("internal", "pbpaste failed");
   }
   const content = decoder.decode(result.stdout);
   return ok({ content });
@@ -139,7 +144,7 @@ export async function handleNotify(
 
   const result = await deps.runCommand("terminal-notifier", args);
   if (!result.success) {
-    return err(`notification failed: ${decoder.decode(result.stderr)}`);
+    return err("internal", `notification failed: ${decoder.decode(result.stderr)}`);
   }
   deps.log(`Notification: ${msg.title}`);
   return ok();
@@ -150,12 +155,12 @@ export function handleOpenUrl(
   deps: HandlerDeps,
 ): Promise<string> {
   if (!/^https?:\/\//i.test(msg.url)) {
-    return Promise.resolve(err("Only http/https URLs are supported"));
+    return Promise.resolve(err("internal", "Only http/https URLs are supported"));
   }
   deps.log(`Opening URL: ${msg.url}`);
   return deps.runCommand("open", [msg.url]).then((result) => {
     if (!result.success) {
-      return err(`open URL failed: ${decoder.decode(result.stderr)}`);
+      return err("internal", `open URL failed: ${decoder.decode(result.stderr)}`);
     }
     return ok();
   });
@@ -211,7 +216,7 @@ export async function handleOpRead(
   const opArgs = [...(msg.account ? ["--account", msg.account] : []), "read", msg.ref];
   const result = await deps.runCommand("op", opArgs);
   if (!result.success) {
-    return err(`op read failed: ${decoder.decode(result.stderr).trim()}`);
+    return err("internal", `op read failed: ${decoder.decode(result.stderr).trim()}`);
   }
   const value = decoder.decode(result.stdout).trim();
   return ok({ value });
@@ -246,7 +251,7 @@ export async function handleOpResolve(
   }
 
   if (errors.length > 0) {
-    return err(`Failed to resolve: ${errors.join("; ")}`);
+    return err("internal", `Failed to resolve: ${errors.join("; ")}`);
   }
   return ok({ resolved });
 }

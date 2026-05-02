@@ -1,5 +1,5 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert";
-import { parseMessage } from "./messages.ts";
+import { makeError, parseMessage } from "./messages.ts";
 
 // --- Valid messages ---
 
@@ -240,4 +240,30 @@ Deno.test("parseMessage: pull missing remoteDest", () => {
     () => parseMessage({ action: "pull", host: "h", remoteHome: "/h", localPath: "/l" }),
     Error, "Missing or invalid 'remoteDest'",
   );
+});
+
+// --- makeError ---
+
+Deno.test("makeError: code + message only", () => {
+  const e = makeError("internal", "boom");
+  assertEquals(e.code, "internal");
+  assertEquals(e.message, "boom");
+  assertEquals(e.host, undefined);
+  assertEquals(e.recovery, undefined);
+});
+
+Deno.test("makeError: includes host and recovery when provided", () => {
+  const e = makeError("mount_stale", "mount unresponsive", {
+    host: "workmbp",
+    recovery: "ra reset workmbp",
+  });
+  assertEquals(e.code, "mount_stale");
+  assertEquals(e.host, "workmbp");
+  assertEquals(e.recovery, "ra reset workmbp");
+});
+
+Deno.test("makeError: omits empty host/recovery", () => {
+  const e = makeError("internal", "boom", { host: "", recovery: "" });
+  assertEquals(e.host, undefined);
+  assertEquals(e.recovery, undefined);
 });

@@ -5,7 +5,7 @@
 //   import { send, requireSock, fail, SOCK, HOST, HOME } from "./lib/oa.ts";
 
 import { existsSync } from "jsr:@std/fs@1/exists";
-import type { Message, Response, OkResponse } from "./messages.ts";
+import type { ErrorObject, Message, OkResponse, Response } from "./messages.ts";
 
 export const HOME = Deno.env.get("HOME") ?? "";
 export const SOCK = Deno.env.get("OPEN_AGENT_SOCK") ?? "/tmp/open-agent.sock";
@@ -119,9 +119,23 @@ export async function send(
   }
 }
 
+/**
+ * Render a structured error for terminal output. Tolerates the legacy
+ * string shape so a CLI built against the new format still displays
+ * something reasonable when talking to an older daemon.
+ */
+export function formatErrorMessage(err: unknown): string {
+  if (typeof err === "string") return err;
+  if (err && typeof err === "object" && "message" in err) {
+    const e = err as ErrorObject;
+    return e.recovery ? `${e.message}\n  → recovery: ${e.recovery}` : e.message;
+  }
+  return "unknown error";
+}
+
 export function checkResponse(response: Response): asserts response is OkResponse {
   if (response.ok !== true) {
-    fail(response.error);
+    fail(formatErrorMessage(response.error));
   }
 }
 

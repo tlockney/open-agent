@@ -5,7 +5,7 @@
 
 import { parseArgs } from "jsr:@std/cli@1/parse-args";
 import type { Message } from "../lib/messages.ts";
-import { send, fail, HOST, HOME } from "../lib/oa.ts";
+import { fail, formatErrorMessage, HOME, HOST, send } from "../lib/oa.ts";
 
 const USAGE = `Usage: ropen [options] <path|url>
 
@@ -98,5 +98,5 @@ if (response.ok) {
     console.log(`Opened: ${localPath}`);
   }
 } else {
-  fail(response.error);
+  fail(formatErrorMessage(response.error));
 }

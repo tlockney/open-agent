@@ -26,12 +26,46 @@ export interface OkResponse {
   [key: string]: unknown;
 }
 
+/**
+ * Categorizes the failure so CLIs can surface accurate diagnostics
+ * and recovery hints instead of generic "agent unreachable" messages.
+ */
+export type ErrorCode =
+  | "transport_unreachable" // could not reach daemon (no socket, no TCP)
+  | "daemon_unresponsive" // connected but no reply within timeout
+  | "mount_missing" // no mount entry for the requested host
+  | "mount_stale" // mount in table but unresponsive
+  | "path_not_found" // mount healthy, file genuinely missing on remote
+  | "auth_failed" // SSH/sshfs auth blew up during (re)mount
+  | "internal"; // unexpected daemon-side failure
+
+export interface ErrorObject {
+  code: ErrorCode;
+  message: string;
+  /** Host the failure relates to, when applicable (mount/path errors). */
+  host?: string;
+  /** Suggested recovery action for the user, e.g., "ra reset workmbp". */
+  recovery?: string;
+}
+
 export interface ErrorResponse {
   ok: false;
-  error: string;
+  error: ErrorObject;
 }
 
 export type Response = OkResponse | ErrorResponse;
+
+/** Helper to construct an error response object from a code + message. */
+export function makeError(
+  code: ErrorCode,
+  message: string,
+  opts?: { host?: string; recovery?: string },
+): ErrorObject {
+  const err: ErrorObject = { code, message };
+  if (opts?.host) err.host = opts.host;
+  if (opts?.recovery) err.recovery = opts.recovery;
+  return err;
+}
 
 // --- Validation ---
 

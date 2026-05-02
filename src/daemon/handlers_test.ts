@@ -147,7 +147,8 @@ Deno.test("handleOpen: returns error on command failure", async () => {
     await handleOpen({ action: "open", host: "h1", remoteHome: "/home/u", path: "/home/u/f" }, deps),
   );
   assertEquals(result.ok, false);
-  assertEquals(result.error, "open failed: file not found");
+  assertEquals(result.error.code, "internal");
+  assertEquals(result.error.message, "open failed: file not found");
 });
 
 // --- open-vscode ---
@@ -202,7 +203,8 @@ Deno.test("handlePaste: returns error on failure", async () => {
   const { deps } = createFakeDeps({ commandResults });
   const result = JSON.parse(await handlePaste(deps));
   assertEquals(result.ok, false);
-  assertEquals(result.error, "pbpaste failed");
+  assertEquals(result.error.code, "internal");
+  assertEquals(result.error.message, "pbpaste failed");
 });
 
 // --- notify ---
@@ -246,7 +248,8 @@ Deno.test("handleOpenUrl: rejects non-http URL", async () => {
     await handleOpenUrl({ action: "open-url", url: "ftp://evil.com" }, deps),
   );
   assertEquals(result.ok, false);
-  assertEquals(result.error, "Only http/https URLs are supported");
+  assertEquals(result.error.code, "internal");
+  assertEquals(result.error.message, "Only http/https URLs are supported");
 });
 
 // --- push ---
@@ -358,7 +361,8 @@ Deno.test("handleOpRead: returns error on failure", async () => {
     await handleOpRead({ action: "op-read", ref: "op://v/i/f" }, deps),
   );
   assertEquals(result.ok, false);
-  assertEquals(result.error, "op read failed: not found");
+  assertEquals(result.error.code, "internal");
+  assertEquals(result.error.message, "op read failed: not found");
 });
 
 // --- op-resolve ---
@@ -399,8 +403,9 @@ Deno.test("handleOpResolve: aggregates errors", async () => {
     ),
   );
   assertEquals(result.ok, false);
-  assertEquals(result.error.includes("A: denied"), true);
-  assertEquals(result.error.includes("B: denied"), true);
+  assertEquals(result.error.code, "internal");
+  assertEquals(result.error.message.includes("A: denied"), true);
+  assertEquals(result.error.message.includes("B: denied"), true);
 });
 
 // --- status ---

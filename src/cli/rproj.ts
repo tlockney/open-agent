@@ -20,12 +20,13 @@ import { basename } from "jsr:@std/path@1/basename";
 import { existsSync } from "jsr:@std/fs@1/exists";
 import { parseArgs as denoParseArgs } from "jsr:@std/cli@1/parse-args";
 import {
+  buildFzfEntries,
   type HostEntry,
   type ProjectEntry,
   type ProjectMatch,
   shellQuote,
-  buildFzfEntries,
 } from "../lib/rproj_utils.ts";
+import { formatErrorMessage } from "../lib/oa.ts";
 
 // --- Constants ---
 
@@ -558,8 +559,7 @@ async function cmdFinder(opts: Opts): Promise<void> {
       success(`Opened: ${response.localPath}`);
     }
   } else {
-    const errMsg = typeof response.error === "string" ? response.error : "unknown error";
-    error(errMsg);
+    error(formatErrorMessage(response.error));
   }
 }
 
@@ -596,7 +596,7 @@ async function cmdDefault(opts: Opts): Promise<void> {
       if (response.ok === true && typeof response.localPath === "string") {
         success(`Opened: ${response.localPath}`);
       } else {
-        error(typeof response.error === "string" ? response.error : "unknown error");
+        error(formatErrorMessage(response.error));
       }
       break;
     }
