@@ -133,6 +133,23 @@ Deno.test("handleOpen: passes -a flag for app", async () => {
   assertEquals(openCalls[0].args, ["-a", "Marked 2", "/mnt/h1/doc.md"]);
 });
 
+Deno.test("handleOpen: returns path_not_found when target is missing", async () => {
+  const { deps, calls } = createFakeDeps({ statThrows: true });
+  await deps.mountManager.ensureMount("h1", "/home/u");
+
+  const result = JSON.parse(
+    await handleOpen(
+      { action: "open", host: "h1", remoteHome: "/home/u", path: "/home/u/missing.md" },
+      deps,
+    ),
+  );
+  assertEquals(result.ok, false);
+  assertEquals(result.error.code, "path_not_found");
+  assertEquals(result.error.host, "h1");
+  // Should not have attempted to invoke `open`.
+  assertEquals(calls.filter((c) => c.cmd === "open").length, 0);
+});
+
 Deno.test("handleOpen: returns error on command failure", async () => {
   const commandResults = new Map<string, CommandResult>();
   commandResults.set("open", {
@@ -267,6 +284,23 @@ Deno.test("handlePush: copies file to Downloads", async () => {
   assertEquals(result.ok, true);
   assertEquals(result.localPath, "/Users/test/Downloads/build.tar.gz");
   assertEquals(copies[0], { src: "/mnt/h1/build.tar.gz", dest: "/Users/test/Downloads/build.tar.gz" });
+});
+
+Deno.test("handlePush: returns path_not_found when source is missing", async () => {
+  const { deps, copies } = createFakeDeps({ statThrows: true });
+  await deps.mountManager.ensureMount("h1", "/home/u");
+
+  const result = JSON.parse(
+    await handlePush(
+      { action: "push", host: "h1", remoteHome: "/home/u", path: "/home/u/missing.tar.gz" },
+      deps,
+    ),
+  );
+  assertEquals(result.ok, false);
+  assertEquals(result.error.code, "path_not_found");
+  assertEquals(result.error.host, "h1");
+  // Should not have attempted to copy.
+  assertEquals(copies.length, 0);
 });
 
 Deno.test("handlePush: uses custom dest", async () => {

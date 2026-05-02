@@ -79,6 +79,17 @@ export async function handleOpen(
   const state = await deps.mountManager.ensureMount(msg.host, msg.remoteHome);
   const localPath = translatePath(msg.path, state);
 
+  // Verify the translated path actually exists on the mount before
+  // shelling out. Without this, a stale or partial mount can cause
+  // `open` to silently fail with a misleading "file not found".
+  try {
+    await deps.stat(localPath);
+  } catch {
+    return err("path_not_found", `path does not exist: ${msg.path}`, {
+      host: msg.host,
+    });
+  }
+
   const args: string[] = [];
   if (msg.app) args.push("-a", msg.app);
   args.push(localPath);
@@ -175,6 +186,15 @@ export async function handlePush(
   const dest = msg.dest ?? `${deps.home}/Downloads`;
   const fileName = srcPath.split("/").pop()!;
   const destPath = `${dest}/${fileName}`;
+
+  // Verify source exists on the mount before attempting to copy.
+  try {
+    await deps.stat(srcPath);
+  } catch {
+    return err("path_not_found", `source path does not exist: ${msg.path}`, {
+      host: msg.host,
+    });
+  }
 
   deps.log(`Push: ${srcPath} → ${destPath}`);
   await deps.copyFile(srcPath, destPath);
