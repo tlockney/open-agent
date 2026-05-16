@@ -25,6 +25,7 @@ import {
   type ProjectEntry,
   type ProjectMatch,
   shellQuote,
+  TERMINAL_RESTORE_SEQUENCE,
 } from "../lib/rproj_utils.ts";
 import { formatErrorMessage } from "../lib/oa.ts";
 
@@ -191,22 +192,23 @@ async function execWithTtyRestore(cmd: string, args: string[]): Promise<number> 
       Deno.removeSignalListener(sig, fn);
     }
     if (isTty) {
-      // Sequences tmux would have emitted on a clean exit: leave alt
-      // screen, disable mouse tracking variants, disable bracketed paste,
-      // show cursor, reset to default character set. Idempotent on clean
-      // exits.
-      const cleanup =
-        "\x1b[?1049l" +   // leave alternate screen buffer
-        "\x1b[?1000l" +   // X10 mouse tracking off
-        "\x1b[?1002l" +   // cell-motion mouse tracking off
-        "\x1b[?1003l" +   // all-motion mouse tracking off
-        "\x1b[?1006l" +   // SGR mouse mode off
-        "\x1b[?2004l" +   // bracketed paste off
-        "\x1b[?25h" +     // show cursor
-        "\x1b(B";         // default character set (G0)
+      // Send the cleanup to /dev/tty (the controlling terminal) directly
+      // when we can: this bypasses any stdout indirection from the
+      // rtmux→rproj wrapper chain and reaches the user's actual terminal
+      // even when fd 1 is something else (e.g. a pipe to a logger). Fall
+      // back to stdout when /dev/tty isn't openable (no controlling tty).
+      const bytes = new TextEncoder().encode(TERMINAL_RESTORE_SEQUENCE);
+      let wroteToTty = false;
       try {
-        await Deno.stdout.write(new TextEncoder().encode(cleanup));
-      } catch { /* terminal already closed */ }
+        using tty = await Deno.open("/dev/tty", { write: true, read: false });
+        await tty.write(bytes);
+        wroteToTty = true;
+      } catch { /* no controlling tty — fall through to stdout */ }
+      if (!wroteToTty) {
+        try {
+          await Deno.stdout.write(bytes);
+        } catch { /* terminal already closed */ }
+      }
       await run("stty", [savedStty ?? "sane"], { stdin: "inherit" });
     }
   }

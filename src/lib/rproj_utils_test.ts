@@ -1,5 +1,10 @@
-import { assertEquals } from "jsr:@std/assert";
-import { shellQuote, buildFzfEntries, type ProjectEntry } from "./rproj_utils.ts";
+import { assertEquals, assertStringIncludes } from "jsr:@std/assert";
+import {
+  buildFzfEntries,
+  type ProjectEntry,
+  shellQuote,
+  TERMINAL_RESTORE_SEQUENCE,
+} from "./rproj_utils.ts";
 
 // --- shellQuote ---
 
@@ -76,4 +81,35 @@ Deno.test("buildFzfEntries: multiple hosts/labels", () => {
   // Personal group
   assertEquals(lines[2], "h2|/home/dev\t\u{1F4C2} Personal");
   assertEquals(lines[3], "h2|/home/dev/blog\t   \u2514\u2500\u2500 blog");
+});
+
+// --- TERMINAL_RESTORE_SEQUENCE ---
+
+Deno.test("TERMINAL_RESTORE_SEQUENCE: leaves alternate screen", () => {
+  assertStringIncludes(TERMINAL_RESTORE_SEQUENCE, "\x1b[?1049l");
+});
+
+Deno.test("TERMINAL_RESTORE_SEQUENCE: disables every mouse tracking mode", () => {
+  // Both axes must be cleared — newer modes don't reliably replace older
+  // ones, so leaving any of these on can keep events flowing.
+  for (const code of ["9", "1000", "1001", "1002", "1003"]) {
+    assertStringIncludes(TERMINAL_RESTORE_SEQUENCE, `\x1b[?${code}l`);
+  }
+});
+
+Deno.test("TERMINAL_RESTORE_SEQUENCE: disables every mouse encoding mode", () => {
+  // 1015 (URxvt) specifically was the leak fixed here — keep all four.
+  for (const code of ["1005", "1006", "1015", "1016"]) {
+    assertStringIncludes(TERMINAL_RESTORE_SEQUENCE, `\x1b[?${code}l`);
+  }
+});
+
+Deno.test("TERMINAL_RESTORE_SEQUENCE: disables focus events and bracketed paste", () => {
+  assertStringIncludes(TERMINAL_RESTORE_SEQUENCE, "\x1b[?1004l");
+  assertStringIncludes(TERMINAL_RESTORE_SEQUENCE, "\x1b[?2004l");
+});
+
+Deno.test("TERMINAL_RESTORE_SEQUENCE: restores cursor and default G0 charset", () => {
+  assertStringIncludes(TERMINAL_RESTORE_SEQUENCE, "\x1b[?25h");
+  assertStringIncludes(TERMINAL_RESTORE_SEQUENCE, "\x1b(B");
 });
