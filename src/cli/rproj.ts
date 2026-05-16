@@ -149,6 +149,69 @@ async function exec(cmd: string, args: string[]): Promise<never> {
   Deno.exit(code);
 }
 
+// Run a child that takes over the TTY (e.g. ssh into a tmux session) and
+// guarantee terminal cleanup even if the child dies abruptly — for example
+// when the SSH connection is killed by a network drop and remote tmux never
+// gets to emit its terminal-restore sequences. Without this, the local
+// terminal is left in alt-screen + raw mode and the user has to run `reset`.
+async function execWithTtyRestore(cmd: string, args: string[]): Promise<number> {
+  const isTty = Deno.stdin.isTerminal();
+
+  let savedStty: string | null = null;
+  if (isTty) {
+    const r = await run("stty", ["-g"], { stdin: "inherit" });
+    if (r.success) savedStty = r.stdout;
+  }
+
+  const child = new Deno.Command(cmd, {
+    args,
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  }).spawn();
+
+  // Forward catchable termination signals to the child so the `finally`
+  // below still runs terminal cleanup. SIGINT is intentionally omitted:
+  // while ssh holds the PTY in raw mode, Ctrl-C is delivered as a byte
+  // to ssh, not as a signal to us. SIGKILL can't be caught.
+  const forwarded: Deno.Signal[] = ["SIGTERM", "SIGHUP"];
+  const signalHandlers = forwarded.map((sig) => {
+    const fn = () => {
+      try { child.kill(sig); } catch { /* already exited */ }
+    };
+    Deno.addSignalListener(sig, fn);
+    return { sig, fn };
+  });
+
+  try {
+    const { code } = await child.status;
+    return code;
+  } finally {
+    for (const { sig, fn } of signalHandlers) {
+      Deno.removeSignalListener(sig, fn);
+    }
+    if (isTty) {
+      // Sequences tmux would have emitted on a clean exit: leave alt
+      // screen, disable mouse tracking variants, disable bracketed paste,
+      // show cursor, reset to default character set. Idempotent on clean
+      // exits.
+      const cleanup =
+        "\x1b[?1049l" +   // leave alternate screen buffer
+        "\x1b[?1000l" +   // X10 mouse tracking off
+        "\x1b[?1002l" +   // cell-motion mouse tracking off
+        "\x1b[?1003l" +   // all-motion mouse tracking off
+        "\x1b[?1006l" +   // SGR mouse mode off
+        "\x1b[?2004l" +   // bracketed paste off
+        "\x1b[?25h" +     // show cursor
+        "\x1b(B";         // default character set (G0)
+      try {
+        await Deno.stdout.write(new TextEncoder().encode(cleanup));
+      } catch { /* terminal already closed */ }
+      await run("stty", [savedStty ?? "sane"], { stdin: "inherit" });
+    }
+  }
+}
+
 
 async function agentSend(message: string): Promise<Record<string, unknown>> {
   let conn: Deno.UnixConn;
@@ -529,7 +592,11 @@ async function cmdTmux(opts: Opts): Promise<void> {
   const { host, path } = await getProjectSelection(hosts, opts);
   const sessionName = basename(path);
   success(`Opening tmux session '${sessionName}' at ${path} on ${host}...`);
-  await exec("ssh", ["-A", "-t", host, `cd ${shellQuote(path)} && ~/bin/tc`]);
+  const code = await execWithTtyRestore(
+    "ssh",
+    ["-A", "-t", host, `cd ${shellQuote(path)} && ~/bin/tc`],
+  );
+  Deno.exit(code);
 }
 
 async function cmdCode(opts: Opts): Promise<void> {
@@ -581,8 +648,11 @@ async function cmdDefault(opts: Opts): Promise<void> {
     case "tmux": {
       const sessionName = basename(path);
       success(`Opening tmux session '${sessionName}' at ${path}...`);
-      await exec("ssh", ["-A", "-t", host, `cd ${shellQuote(path)} && ~/bin/tc`]);
-      break;
+      const code = await execWithTtyRestore(
+        "ssh",
+        ["-A", "-t", host, `cd ${shellQuote(path)} && ~/bin/tc`],
+      );
+      Deno.exit(code);
     }
     case "code":
       success(`Opening ${path} in VS Code...`);
