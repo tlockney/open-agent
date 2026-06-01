@@ -207,7 +207,10 @@ export function createRealDeps(log: (msg: string) => void): MountDeps {
       await Deno.mkdir(path, opts);
     },
     log,
-    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    // Coerce to `number`: newer Deno types the global setTimeout as returning
+    // `Timeout`, but MountDeps (and the tests) use numeric timer ids. The id is
+    // a number at runtime on Deno, so Number() is a safe, version-stable pin.
+    setTimeout: (fn, ms) => Number(setTimeout(fn, ms)),
     clearTimeout: (id) => clearTimeout(id),
   };
 }
