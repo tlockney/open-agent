@@ -7,7 +7,7 @@
 
 import { parseArgs } from "jsr:@std/cli@1/parse-args";
 import type { Message } from "../lib/messages.ts";
-import { fail, formatErrorMessage, HOME, HOST, send } from "../lib/oa.ts";
+import { fail, formatErrorMessage, HOME, HOST, isRemoteSession, send } from "../lib/oa.ts";
 
 const USAGE = `Usage: ropen [options] <path|url>
 
@@ -41,6 +41,9 @@ let target = String(positional[0]);
 let app = args.a ?? "";
 let vscode = args.v;
 
+const isVsCodeApp = app.includes("Visual Studio Code") ||
+  (app.includes("Code") && !app.includes("Xcode"));
+
 // Detect URLs
 const isUrl = /^https?:\/\//.test(target);
 
@@ -55,8 +58,32 @@ if (!isUrl) {
   }
 }
 
+// Not in an SSH session — we're on the local Mac, so the agent round-trip
+// is pointless and `target` is already a real local path. Run native open
+// (or VS Code) directly. Note: this only triggers when we were never
+// remote; the agent-unreachable-while-remote case below still errors loudly.
+if (!isRemoteSession()) {
+  let cmdArgs: string[];
+  if (isUrl) {
+    cmdArgs = ["open", target];
+  } else if (vscode || isVsCodeApp) {
+    cmdArgs = ["code", target];
+  } else if (app) {
+    cmdArgs = ["open", "-a", app, target];
+  } else {
+    cmdArgs = ["open", target];
+  }
+  const { code } = await new Deno.Command(cmdArgs[0], {
+    args: cmdArgs.slice(1),
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  }).output();
+  Deno.exit(code);
+}
+
 // Detect VS Code by app name
-if (app.includes("Visual Studio Code") || (app.includes("Code") && !app.includes("Xcode"))) {
+if (isVsCodeApp) {
   vscode = true;
   app = "";
 }

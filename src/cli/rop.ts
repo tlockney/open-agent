@@ -5,7 +5,7 @@
 //        rop run -- command args...
 
 import type { Message } from "../lib/messages.ts";
-import { send, requireSock, checkResponse, getStringField, fail } from "../lib/oa.ts";
+import { send, requireSock, checkResponse, getStringField, fail, isRemoteSession } from "../lib/oa.ts";
 
 const USAGE = `Usage: rop [--account <account>] <subcommand> [options]
 
@@ -41,8 +41,22 @@ for (let i = 0; i < Deno.args.length; i++) {
 }
 
 const subcmd = filtered[0];
+const isHelp = subcmd === "-h" || subcmd === "--help" || subcmd === "help";
 
-if (subcmd !== "-h" && subcmd !== "--help" && subcmd !== "help") {
+if (!isHelp && !isRemoteSession()) {
+  // Local Mac — the real `op` CLI is available, so delegate verbatim. op
+  // does its own op:// resolution; --account passes straight through.
+  // Help still falls through to rop's own USAGE below.
+  const { code } = await new Deno.Command("op", {
+    args: Deno.args,
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  }).output();
+  Deno.exit(code);
+}
+
+if (!isHelp) {
   requireSock();
 }
 const rest = filtered.slice(1);

@@ -24,6 +24,20 @@ function resolveHost(): string {
   return "unknown";
 }
 export const HOST = resolveHost();
+
+/**
+ * True when running inside an SSH session — i.e. on the remote machine,
+ * where the r* commands should reach back to the local agent. False means
+ * we're sitting at the local Mac and should run the native equivalent.
+ */
+export function isRemoteSession(): boolean {
+  return Boolean(
+    Deno.env.get("SSH_CONNECTION") ||
+      Deno.env.get("SSH_TTY") ||
+      Deno.env.get("SSH_CLIENT"),
+  );
+}
+
 export const SCRIPT_NAME = new URL(import.meta.url).pathname.split("/").at(-2) ?? "oa";
 
 export function fail(msg: string): never {

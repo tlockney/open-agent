@@ -6,11 +6,12 @@
 
 import { dirname } from "jsr:@std/path@1/dirname";
 import { fromFileUrl } from "jsr:@std/path@1/from-file-url";
+import { isRemoteSession } from "../lib/oa.ts";
 
 const scriptDir = dirname(fromFileUrl(import.meta.url));
 const target = Deno.args[0] ?? ".";
 
-if (Deno.env.get("SSH_CONNECTION")) {
+if (isRemoteSession()) {
   // On the remote — use ropen -v
   const { code } = await new Deno.Command(`${scriptDir}/ropen.ts`, {
     args: ["-v", target],
