@@ -41,6 +41,9 @@ let target = String(positional[0]);
 let app = args.a ?? "";
 let vscode = args.v;
 
+const isVsCodeApp = app.includes("Visual Studio Code") ||
+  (app.includes("Code") && !app.includes("Xcode"));
+
 // Detect URLs
 const isUrl = /^https?:\/\//.test(target);
 
@@ -63,7 +66,7 @@ if (!isRemoteSession()) {
   let cmdArgs: string[];
   if (isUrl) {
     cmdArgs = ["open", target];
-  } else if (vscode || app.includes("Visual Studio Code") || (app.includes("Code") && !app.includes("Xcode"))) {
+  } else if (vscode || isVsCodeApp) {
     cmdArgs = ["code", target];
   } else if (app) {
     cmdArgs = ["open", "-a", app, target];
@@ -80,7 +83,7 @@ if (!isRemoteSession()) {
 }
 
 // Detect VS Code by app name
-if (app.includes("Visual Studio Code") || (app.includes("Code") && !app.includes("Xcode"))) {
+if (isVsCodeApp) {
   vscode = true;
   app = "";
 }
