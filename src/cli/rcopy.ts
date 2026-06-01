@@ -14,6 +14,7 @@ if (!isRemoteSession()) {
   const writer = proc.stdin.getWriter();
   await writer.write(new TextEncoder().encode(input));
   await writer.close();
+  writer.releaseLock();
   const { code } = await proc.status;
   Deno.exit(code);
 }
