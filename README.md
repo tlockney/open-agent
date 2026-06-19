@@ -194,6 +194,25 @@ rproj finder                  # interactive Finder via SSHFS
 rproj status
 ```
 
+### Host-qualified project names
+
+When the same project name exists on more than one host, qualify it
+with a `host:` prefix to pick the host inline. This works for `rproj`,
+`rtmux`, and `rcode`:
+
+```bash
+rtmux m4mini:personal         # open 'personal' on m4mini specifically
+rcode m4mini:personal         # same, in VS Code
+rproj tmux m4mini:personal    # the long form
+rtmux m4mini:                 # pin the host, pick the project interactively
+```
+
+The host part is matched strictly against the text before the first
+colon; an unknown host (or one that conflicts with an explicit `-h`)
+is an error. The prefix is a local-side, cross-host selector — it has
+no effect inside a remote session (where `rcode` already targets the
+one host you're connected to).
+
 ## Configuration
 
 **Hosts file:** `~/.config/open-agent/remote-hosts`

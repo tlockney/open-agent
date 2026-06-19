@@ -25,6 +25,7 @@ import {
   type ProjectEntry,
   type ProjectMatch,
   shellQuote,
+  splitHostQualifier,
   TERMINAL_RESTORE_SEQUENCE,
 } from "../lib/rproj_utils.ts";
 import { formatErrorMessage } from "../lib/oa.ts";
@@ -780,6 +781,10 @@ Commands:
 
     If no command is given, interactively select a project and action.
 
+    A project may be host-qualified as HOST:PROJECT (e.g. m4mini:personal)
+    to disambiguate duplicate names across hosts. HOST: alone pins the host
+    and picks the project interactively. Conflicts with -h are an error.
+
 Options:
     -h, --host HOST   Filter to a specific host alias
     -p NAME           Project name (skip interactive selection)
@@ -798,6 +803,8 @@ Examples:
     ${SCRIPT_NAME} list --json             # JSON output for Alfred
     ${SCRIPT_NAME} t                       # Interactive tmux selection
     ${SCRIPT_NAME} tmux -h workmbp proj    # Direct tmux on specific host
+    ${SCRIPT_NAME} tmux m4mini:personal    # host:project — pin host inline
+    ${SCRIPT_NAME} tmux m4mini:            # Pin host, pick project interactively
     ${SCRIPT_NAME} c                       # Interactive VS Code selection
     ${SCRIPT_NAME} f                       # Interactive: open project in Finder
     ${SCRIPT_NAME} setup                   # Print SSH config recommendations
@@ -849,8 +856,30 @@ function parseArgs(args: string[]): Command {
 
   if (parsed.help) return { cmd: "help" };
 
-  const hostFilter = (parsed.host as string | undefined) ?? null;
-  const projectName = (parsed.p as string | undefined) ?? (parsed._ [0] as string | undefined) ?? null;
+  const flagHost = (parsed.host as string | undefined) ?? null;
+  const rawProject = (parsed.p as string | undefined) ?? (parsed._ [0] as string | undefined) ?? null;
+
+  // A project token may carry a `host:` prefix (e.g. `m4mini:personal`).
+  // Resolve it against the `-h` flag: the prefix sets the host filter, but
+  // disagreeing with an explicit `-h` is a mistake worth flagging.
+  let hostFilter = flagHost;
+  let projectName = rawProject;
+  if (rawProject !== null) {
+    let split: { host: string | null; name: string };
+    try {
+      split = splitHostQualifier(rawProject);
+    } catch (e) {
+      error(e instanceof Error ? e.message : String(e));
+    }
+    if (split.host !== null) {
+      if (flagHost !== null && flagHost !== split.host) {
+        error(`host given twice (-h ${flagHost} vs ${split.host}:)`);
+      }
+      hostFilter = split.host;
+    }
+    projectName = split.name === "" ? null : split.name;
+  }
+
   const opts: Opts = { hostFilter, projectName };
 
   switch (cmdName) {

@@ -1,10 +1,37 @@
-import { assertEquals, assertStringIncludes } from "jsr:@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "jsr:@std/assert";
 import {
   buildFzfEntries,
   type ProjectEntry,
   shellQuote,
+  splitHostQualifier,
   TERMINAL_RESTORE_SEQUENCE,
 } from "./rproj_utils.ts";
+
+// --- splitHostQualifier ---
+
+Deno.test("splitHostQualifier: no colon is a bare project name", () => {
+  assertEquals(splitHostQualifier("personal"), { host: null, name: "personal" });
+});
+
+Deno.test("splitHostQualifier: host:name splits into both parts", () => {
+  assertEquals(splitHostQualifier("m4mini:personal"), { host: "m4mini", name: "personal" });
+});
+
+Deno.test("splitHostQualifier: trailing colon yields empty name", () => {
+  assertEquals(splitHostQualifier("m4mini:"), { host: "m4mini", name: "" });
+});
+
+Deno.test("splitHostQualifier: splits on the first colon only", () => {
+  assertEquals(splitHostQualifier("m4mini:sub:dir"), { host: "m4mini", name: "sub:dir" });
+});
+
+Deno.test("splitHostQualifier: empty string is a bare (empty) name", () => {
+  assertEquals(splitHostQualifier(""), { host: null, name: "" });
+});
+
+Deno.test("splitHostQualifier: leading colon (empty host) throws", () => {
+  assertThrows(() => splitHostQualifier(":personal"), Error, "empty host");
+});
 
 // --- shellQuote ---
 
