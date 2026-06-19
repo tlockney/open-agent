@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # open-agent-hook.sh
 # Source this from .zshrc (or .bashrc) on the REMOTE machine.
 # Registers/unregisters SSH sessions with the local open-agent daemon

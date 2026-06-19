@@ -15,12 +15,14 @@ export interface MountInfo {
 export function translatePath(remotePath: string, mount: MountInfo): string {
   const normalized = normalize(remotePath);
   const normalizedHome = normalize(mount.remoteHome);
-  if (normalized === normalizedHome || normalized.startsWith(normalizedHome + "/")) {
+  if (
+    normalized === normalizedHome || normalized.startsWith(normalizedHome + "/")
+  ) {
     const relative = normalized.slice(normalizedHome.length);
     return mount.mountPoint + relative;
   }
   throw new Error(
     `Path outside remote home: ${remotePath} (home: ${mount.remoteHome}). ` +
-    `Only paths under the remote home directory are accessible via SSHFS.`
+      `Only paths under the remote home directory are accessible via SSHFS.`,
   );
 }

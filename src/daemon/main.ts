@@ -5,8 +5,8 @@
 // files locally.
 
 import { parseMessage } from "../lib/messages.ts";
-import { MountManager, createRealDeps } from "./mount_manager.ts";
-import { initLog, log, closeLog } from "./logger.ts";
+import { createRealDeps, MountManager } from "./mount_manager.ts";
+import { closeLog, initLog, log } from "./logger.ts";
 import { handleMessage, type HandlerDeps } from "./handlers.ts";
 
 const VERSION = "0.7.0";
@@ -37,7 +37,11 @@ const handlerDeps: HandlerDeps = {
   async runCommand(cmd, args) {
     const command = new Deno.Command(cmd, { args });
     const result = await command.output();
-    return { success: result.success, stdout: result.stdout, stderr: result.stderr };
+    return {
+      success: result.success,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
   },
   spawnCommand(cmd, _opts) {
     const command = new Deno.Command(cmd, { stdin: "piped" });
@@ -69,14 +73,20 @@ async function handleConnection(conn: Deno.Conn): Promise<void> {
   try {
     const buf = new Uint8Array(8192);
     const n = await conn.read(buf);
-    if (!n) { log("Connection closed with no data"); return; }
+    if (!n) {
+      log("Connection closed with no data");
+      return;
+    }
 
     const raw = new TextDecoder().decode(buf.subarray(0, n)).trim();
     let msg;
     try {
       msg = parseMessage(JSON.parse(raw));
     } catch (e) {
-      const err = JSON.stringify({ ok: false, error: `Bad request: ${e instanceof Error ? e.message : e}` });
+      const err = JSON.stringify({
+        ok: false,
+        error: `Bad request: ${e instanceof Error ? e.message : e}`,
+      });
       await conn.write(new TextEncoder().encode(err + "\n"));
       return;
     }
@@ -90,7 +100,9 @@ async function handleConnection(conn: Deno.Conn): Promise<void> {
       await conn.write(new TextEncoder().encode(err + "\n"));
     } catch { /* connection dead */ }
   } finally {
-    try { conn.close(); } catch { /* */ }
+    try {
+      conn.close();
+    } catch { /* */ }
   }
 }
 
@@ -99,7 +111,9 @@ async function handleConnection(conn: Deno.Conn): Promise<void> {
 async function acceptConnections(listener: Deno.Listener): Promise<void> {
   try {
     for await (const conn of listener) {
-      handleConnection(conn).catch((e) => log(`Unhandled connection error: ${e}`));
+      handleConnection(conn).catch((e) =>
+        log(`Unhandled connection error: ${e}`)
+      );
     }
   } catch (e) {
     log(`Listener error: ${e}`);
@@ -127,7 +141,9 @@ async function main(): Promise<void> {
     log("Shutting down...");
     unixListener.close();
     tcpListener.close();
-    try { await Deno.remove(SOCKET_PATH); } catch { /* */ }
+    try {
+      await Deno.remove(SOCKET_PATH);
+    } catch { /* */ }
     await mountManager.unmountAll();
     closeLog();
     Deno.exit(0);

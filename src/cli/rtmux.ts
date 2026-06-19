@@ -7,6 +7,8 @@ import { fromFileUrl } from "jsr:@std/path@1/from-file-url";
 const scriptDir = dirname(fromFileUrl(import.meta.url));
 const { code } = await new Deno.Command(`${scriptDir}/rproj.ts`, {
   args: ["tmux", ...Deno.args],
-  stdin: "inherit", stdout: "inherit", stderr: "inherit",
+  stdin: "inherit",
+  stdout: "inherit",
+  stderr: "inherit",
 }).output();
 Deno.exit(code);

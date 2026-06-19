@@ -1,7 +1,18 @@
 {
   "tasks": {
     "test": "deno test --allow-read --allow-env",
-    "check": "deno check src/daemon/main.ts src/lib/*.ts src/cli/*.ts"
+    "check": "deno check src/",
+    "lint": "deno lint",
+    "fmt": "deno fmt",
+    "fmt:check": "deno fmt --check"
+  },
+  "fmt": {
+    "exclude": ["**/*.md"]
+  },
+  "lint": {
+    "rules": {
+      "exclude": ["no-import-prefix", "require-await"]
+    }
   },
   "compilerOptions": {
     "strict": true

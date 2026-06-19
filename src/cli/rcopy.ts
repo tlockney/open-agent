@@ -3,7 +3,13 @@
 // Usage: echo "text" | rcopy
 //        cat file.txt | rcopy
 
-import { checkResponse, fail, isRemoteSession, requireSock, send } from "../lib/oa.ts";
+import {
+  checkResponse,
+  fail,
+  isRemoteSession,
+  requireSock,
+  send,
+} from "../lib/oa.ts";
 
 const input = await new Response(Deno.stdin.readable).text();
 if (!input) fail("no input on stdin");

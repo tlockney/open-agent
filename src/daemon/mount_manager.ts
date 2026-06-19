@@ -49,13 +49,18 @@ export class MountManager {
    * Concurrent calls for the same host are serialized to prevent parallel sshfs spawns.
    */
   ensureMount(host: string, remoteHome: string): Promise<MountState> {
-    const existing = this.mountLocks.get(host) ?? Promise.resolve(undefined as unknown as MountState);
+    const existing = this.mountLocks.get(host) ??
+      Promise.resolve(undefined as unknown as MountState);
     const next = existing
       .catch(() => undefined as unknown as MountState)
       .then(() => this.doMount(host, remoteHome));
-    const guarded = next.catch((e: unknown) => { throw e; });
+    const guarded = next.catch((e: unknown) => {
+      throw e;
+    });
     this.mountLocks.set(host, guarded);
-    guarded.catch(() => { /* prevent unhandled rejection on the stored promise */ })
+    guarded.catch(
+      () => {/* prevent unhandled rejection on the stored promise */},
+    )
       .finally(() => {
         if (this.mountLocks.get(host) === guarded) this.mountLocks.delete(host);
       });
@@ -71,7 +76,9 @@ export class MountManager {
       this.deps.clearTimeout(state.unmountTimer);
     }
 
-    this.deps.log(`Scheduling unmount for ${host} in ${this.unmountGraceMs / 1000}s`);
+    this.deps.log(
+      `Scheduling unmount for ${host} in ${this.unmountGraceMs / 1000}s`,
+    );
     state.unmountTimer = this.deps.setTimeout(() => {
       if (state.sessions.size === 0) {
         this.unmountHost(host);
@@ -152,14 +159,22 @@ export class MountManager {
     const result = await this.deps.runCommand("sshfs", [
       `${host}:${remoteHome}`,
       mountPoint,
-      "-o", "reconnect",
-      "-o", "ServerAliveInterval=15",
-      "-o", "ServerAliveCountMax=3",
-      "-o", "follow_symlinks",
-      "-o", `volname=remote-${host}`,
-      "-o", "cache=yes",
-      "-o", "cache_timeout=120",
-      "-o", "attr_timeout=120",
+      "-o",
+      "reconnect",
+      "-o",
+      "ServerAliveInterval=15",
+      "-o",
+      "ServerAliveCountMax=3",
+      "-o",
+      "follow_symlinks",
+      "-o",
+      `volname=remote-${host}`,
+      "-o",
+      "cache=yes",
+      "-o",
+      "cache_timeout=120",
+      "-o",
+      "attr_timeout=120",
     ]);
 
     if (!result.success) {
@@ -201,7 +216,11 @@ export function createRealDeps(log: (msg: string) => void): MountDeps {
         signal: opts?.signal,
       });
       const result = await command.output();
-      return { success: result.success, stdout: result.stdout, stderr: result.stderr };
+      return {
+        success: result.success,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      };
     },
     async mkdir(path, opts) {
       await Deno.mkdir(path, opts);

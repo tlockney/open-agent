@@ -2,7 +2,10 @@
 
 let logFile: Deno.FsFile | null = null;
 
-export async function initLog(agentDir: string, logPath: string): Promise<void> {
+export async function initLog(
+  agentDir: string,
+  logPath: string,
+): Promise<void> {
   await Deno.mkdir(agentDir, { recursive: true });
   logFile = await Deno.open(logPath, {
     write: true,

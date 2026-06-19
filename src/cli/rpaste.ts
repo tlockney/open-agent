@@ -3,7 +3,13 @@
 // Usage: rpaste
 //        rpaste | vim -
 
-import { checkResponse, getStringField, isRemoteSession, requireSock, send } from "../lib/oa.ts";
+import {
+  checkResponse,
+  getStringField,
+  isRemoteSession,
+  requireSock,
+  send,
+} from "../lib/oa.ts";
 
 if (!isRemoteSession()) {
   // Local Mac — read the system clipboard directly.

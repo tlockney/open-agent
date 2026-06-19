@@ -6,7 +6,7 @@
 
 import { parseArgs } from "jsr:@std/cli@1/parse-args";
 import type { Message } from "../lib/messages.ts";
-import { send, requireSock, checkResponse, fail } from "../lib/oa.ts";
+import { checkResponse, fail, requireSock, send } from "../lib/oa.ts";
 
 const USAGE = `Usage: rnotify [options] <title> [message]
 
@@ -26,7 +26,10 @@ const args = parseArgs(Deno.args, {
   boolean: ["h"],
 });
 
-if (args.h) { console.log(USAGE); Deno.exit(0); }
+if (args.h) {
+  console.log(USAGE);
+  Deno.exit(0);
+}
 
 const positional = args._ as string[];
 if (positional.length === 0) fail("title required. See rnotify -h");

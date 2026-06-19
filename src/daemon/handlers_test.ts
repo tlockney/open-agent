@@ -1,30 +1,33 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "jsr:@std/assert@1";
 import {
+  type CommandResult,
   handleConnect,
-  handleDisconnect,
-  handleOpen,
-  handleOpenVscode,
   handleCopy,
-  handlePaste,
+  handleDisconnect,
+  handleDoctor,
   handleNotify,
+  handleOpen,
   handleOpenUrl,
-  handlePush,
-  handlePull,
+  handleOpenVscode,
   handleOpRead,
   handleOpResolve,
-  handleDoctor,
+  handlePaste,
   handlePing,
+  handlePull,
+  handlePush,
+  type HandlerDeps,
   handleReset,
   handleStatus,
-  type HandlerDeps,
-  type CommandResult,
   type SpawnedProcess,
 } from "./handlers.ts";
-import { MountManager, type MountDeps } from "./mount_manager.ts";
+import { type MountDeps, MountManager } from "./mount_manager.ts";
 
 const encoder = new TextEncoder();
 
-interface Call { cmd: string; args: string[] }
+interface Call {
+  cmd: string;
+  args: string[];
+}
 
 /** Create a minimal MountManager with a fake mount already in place. */
 function createFakeMountManager(opts?: {
@@ -55,26 +58,48 @@ function createFakeMountManager(opts?: {
         }
         const mp = args?.[1];
         if (typeof mp === "string") mounted.add(mp);
-        return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
+        return {
+          success: true,
+          stdout: new Uint8Array(),
+          stderr: new Uint8Array(),
+        };
       }
       if (cmd === "mount") {
         const list = [...mounted].map((mp) => `fakefs on ${mp}`).join("\n");
-        return { success: true, stdout: encoder.encode(list), stderr: new Uint8Array() };
+        return {
+          success: true,
+          stdout: encoder.encode(list),
+          stderr: new Uint8Array(),
+        };
       }
       if (cmd === "umount" || cmd === "diskutil") {
         // Last arg is the mount point for both umount and diskutil unmount force.
         const mp = args?.[args.length - 1];
         if (typeof mp === "string") mounted.delete(mp);
-        return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
+        return {
+          success: true,
+          stdout: new Uint8Array(),
+          stderr: new Uint8Array(),
+        };
       }
       if (cmd === "stat" && opts?.failStat) {
-        return { success: false, stdout: new Uint8Array(), stderr: new Uint8Array() };
+        return {
+          success: false,
+          stdout: new Uint8Array(),
+          stderr: new Uint8Array(),
+        };
       }
-      return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
+      return {
+        success: true,
+        stdout: new Uint8Array(),
+        stderr: new Uint8Array(),
+      };
     },
     async mkdir() {},
     log() {},
-    setTimeout(_fn, _ms) { return 0; },
+    setTimeout(_fn, _ms) {
+      return 0;
+    },
     clearTimeout() {},
   };
   return new MountManager(deps, "/mnt", 30000);
@@ -91,7 +116,12 @@ function createFakeDeps(opts?: {
   stat?: (path: string) => Promise<{ isDirectory: boolean }>;
   /** Custom mount manager — overrides the default fake. */
   mountManager?: MountManager;
-}): { deps: HandlerDeps; calls: Call[]; logs: string[]; copies: Array<{ src: string; dest: string }> } {
+}): {
+  deps: HandlerDeps;
+  calls: Call[];
+  logs: string[];
+  copies: Array<{ src: string; dest: string }>;
+} {
   const calls: Call[] = [];
   const logs: string[] = [];
   const copies: Array<{ src: string; dest: string }> = [];
@@ -110,20 +140,30 @@ function createFakeDeps(opts?: {
       calls.push({ cmd, args });
       const result = opts?.commandResults?.get(cmd);
       if (result) return result;
-      return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
+      return {
+        success: true,
+        stdout: new Uint8Array(),
+        stderr: new Uint8Array(),
+      };
     },
     spawnCommand(cmd, _opts) {
       calls.push({ cmd, args: [] });
       return {
         stdin: new WritableStream<Uint8Array>({
-          write(_chunk) { /* captured for testing if needed */ },
+          write(_chunk) {/* captured for testing if needed */},
         }),
-        async output() { return { success: true }; },
+        async output() {
+          return { success: true };
+        },
       } satisfies SpawnedProcess;
     },
-    async copyFile(src, dest) { copies.push({ src, dest }); },
+    async copyFile(src, dest) {
+      copies.push({ src, dest });
+    },
     stat: opts?.stat ?? defaultStat,
-    log(msg) { logs.push(msg); },
+    log(msg) {
+      logs.push(msg);
+    },
     home: "/Users/test",
     version: "0.3.0",
   };
@@ -136,7 +176,12 @@ function createFakeDeps(opts?: {
 Deno.test("handleConnect: mounts and tracks session", async () => {
   const { deps } = createFakeDeps();
   const result = JSON.parse(
-    await handleConnect({ action: "connect", host: "h1", remoteHome: "/home/u", sessionId: "s1" }, deps),
+    await handleConnect({
+      action: "connect",
+      host: "h1",
+      remoteHome: "/home/u",
+      sessionId: "s1",
+    }, deps),
   );
   assertEquals(result.ok, true);
   assertEquals(result.mountPoint, "/mnt/h1");
@@ -150,7 +195,10 @@ Deno.test("handleDisconnect: removes session and schedules unmount", () => {
   });
   // Disconnect won't error even if mount doesn't exist yet in sync context
   const result = JSON.parse(
-    handleDisconnect({ action: "disconnect", host: "h1", sessionId: "s1" }, deps),
+    handleDisconnect(
+      { action: "disconnect", host: "h1", sessionId: "s1" },
+      deps,
+    ),
   );
   assertEquals(result.ok, true);
 });
@@ -162,7 +210,12 @@ Deno.test("handleOpen: invokes open with translated path", async () => {
   await deps.mountManager.ensureMount("h1", "/home/u");
 
   const result = JSON.parse(
-    await handleOpen({ action: "open", host: "h1", remoteHome: "/home/u", path: "/home/u/file.md" }, deps),
+    await handleOpen({
+      action: "open",
+      host: "h1",
+      remoteHome: "/home/u",
+      path: "/home/u/file.md",
+    }, deps),
   );
   assertEquals(result.ok, true);
   assertEquals(result.localPath, "/mnt/h1/file.md");
@@ -177,7 +230,13 @@ Deno.test("handleOpen: passes -a flag for app", async () => {
   await deps.mountManager.ensureMount("h1", "/home/u");
 
   await handleOpen(
-    { action: "open", host: "h1", remoteHome: "/home/u", path: "/home/u/doc.md", app: "Marked 2" },
+    {
+      action: "open",
+      host: "h1",
+      remoteHome: "/home/u",
+      path: "/home/u/doc.md",
+      app: "Marked 2",
+    },
     deps,
   );
 
@@ -192,7 +251,12 @@ Deno.test("handleOpen: returns path_not_found when target is missing but mount i
 
   const result = JSON.parse(
     await handleOpen(
-      { action: "open", host: "h1", remoteHome: "/home/u", path: "/home/u/missing.md" },
+      {
+        action: "open",
+        host: "h1",
+        remoteHome: "/home/u",
+        path: "/home/u/missing.md",
+      },
       deps,
     ),
   );
@@ -212,7 +276,12 @@ Deno.test("handleOpen: returns mount_stale when remount itself fails", async () 
 
   const result = JSON.parse(
     await handleOpen(
-      { action: "open", host: "h1", remoteHome: "/home/u", path: "/home/u/f.md" },
+      {
+        action: "open",
+        host: "h1",
+        remoteHome: "/home/u",
+        path: "/home/u/f.md",
+      },
       deps,
     ),
   );
@@ -237,7 +306,12 @@ Deno.test("handleOpen: silently recovers when remount restores the path", async 
 
   const result = JSON.parse(
     await handleOpen(
-      { action: "open", host: "h1", remoteHome: "/home/u", path: "/home/u/f.md" },
+      {
+        action: "open",
+        host: "h1",
+        remoteHome: "/home/u",
+        path: "/home/u/f.md",
+      },
       deps,
     ),
   );
@@ -260,7 +334,12 @@ Deno.test("handleOpen: returns error on command failure", async () => {
   await deps.mountManager.ensureMount("h1", "/home/u");
 
   const result = JSON.parse(
-    await handleOpen({ action: "open", host: "h1", remoteHome: "/home/u", path: "/home/u/f" }, deps),
+    await handleOpen({
+      action: "open",
+      host: "h1",
+      remoteHome: "/home/u",
+      path: "/home/u/f",
+    }, deps),
   );
   assertEquals(result.ok, false);
   assertEquals(result.error.code, "internal");
@@ -272,12 +351,20 @@ Deno.test("handleOpen: returns error on command failure", async () => {
 Deno.test("handleOpenVscode: invokes code with remote args", async () => {
   const { deps, calls } = createFakeDeps();
   const result = JSON.parse(
-    await handleOpenVscode({ action: "open-vscode", host: "h1", path: "/home/u/project" }, deps),
+    await handleOpenVscode({
+      action: "open-vscode",
+      host: "h1",
+      path: "/home/u/project",
+    }, deps),
   );
   assertEquals(result.ok, true);
 
   const codeCalls = calls.filter((c) => c.cmd === "code");
-  assertEquals(codeCalls[0].args, ["--remote", "ssh-remote+h1", "/home/u/project"]);
+  assertEquals(codeCalls[0].args, [
+    "--remote",
+    "ssh-remote+h1",
+    "/home/u/project",
+  ]);
 });
 
 // --- copy ---
@@ -329,14 +416,29 @@ Deno.test("handleNotify: builds terminal-notifier args", async () => {
   const { deps, calls } = createFakeDeps();
   const result = JSON.parse(
     await handleNotify(
-      { action: "notify", title: "Build", message: "Done", subtitle: "proj", sound: "Ping" },
+      {
+        action: "notify",
+        title: "Build",
+        message: "Done",
+        subtitle: "proj",
+        sound: "Ping",
+      },
       deps,
     ),
   );
   assertEquals(result.ok, true);
 
   const notifyCalls = calls.filter((c) => c.cmd === "terminal-notifier");
-  assertEquals(notifyCalls[0].args, ["-title", "Build", "-message", "Done", "-subtitle", "proj", "-sound", "Ping"]);
+  assertEquals(notifyCalls[0].args, [
+    "-title",
+    "Build",
+    "-message",
+    "Done",
+    "-subtitle",
+    "proj",
+    "-sound",
+    "Ping",
+  ]);
 });
 
 Deno.test("handleNotify: title only", async () => {
@@ -351,7 +453,10 @@ Deno.test("handleNotify: title only", async () => {
 Deno.test("handleOpenUrl: opens valid http URL", async () => {
   const { deps, calls } = createFakeDeps();
   const result = JSON.parse(
-    await handleOpenUrl({ action: "open-url", url: "https://example.com" }, deps),
+    await handleOpenUrl(
+      { action: "open-url", url: "https://example.com" },
+      deps,
+    ),
   );
   assertEquals(result.ok, true);
   const openCalls = calls.filter((c) => c.cmd === "open");
@@ -376,22 +481,37 @@ Deno.test("handlePush: copies file to Downloads", async () => {
 
   const result = JSON.parse(
     await handlePush(
-      { action: "push", host: "h1", remoteHome: "/home/u", path: "/home/u/build.tar.gz" },
+      {
+        action: "push",
+        host: "h1",
+        remoteHome: "/home/u",
+        path: "/home/u/build.tar.gz",
+      },
       deps,
     ),
   );
   assertEquals(result.ok, true);
   assertEquals(result.localPath, "/Users/test/Downloads/build.tar.gz");
-  assertEquals(copies[0], { src: "/mnt/h1/build.tar.gz", dest: "/Users/test/Downloads/build.tar.gz" });
+  assertEquals(copies[0], {
+    src: "/mnt/h1/build.tar.gz",
+    dest: "/Users/test/Downloads/build.tar.gz",
+  });
 });
 
 Deno.test("handlePush: returns path_not_found when source is missing but mount is alive", async () => {
-  const { deps, copies } = createFakeDeps({ statThrowsFor: ["missing.tar.gz"] });
+  const { deps, copies } = createFakeDeps({
+    statThrowsFor: ["missing.tar.gz"],
+  });
   await deps.mountManager.ensureMount("h1", "/home/u");
 
   const result = JSON.parse(
     await handlePush(
-      { action: "push", host: "h1", remoteHome: "/home/u", path: "/home/u/missing.tar.gz" },
+      {
+        action: "push",
+        host: "h1",
+        remoteHome: "/home/u",
+        path: "/home/u/missing.tar.gz",
+      },
       deps,
     ),
   );
@@ -408,7 +528,12 @@ Deno.test("handlePush: returns mount_stale when remount itself fails", async () 
 
   const result = JSON.parse(
     await handlePush(
-      { action: "push", host: "h1", remoteHome: "/home/u", path: "/home/u/build.tar.gz" },
+      {
+        action: "push",
+        host: "h1",
+        remoteHome: "/home/u",
+        path: "/home/u/build.tar.gz",
+      },
       deps,
     ),
   );
@@ -424,7 +549,13 @@ Deno.test("handlePush: uses custom dest", async () => {
 
   const result = JSON.parse(
     await handlePush(
-      { action: "push", host: "h1", remoteHome: "/home/u", path: "/home/u/f.txt", dest: "/tmp" },
+      {
+        action: "push",
+        host: "h1",
+        remoteHome: "/home/u",
+        path: "/home/u/f.txt",
+        dest: "/tmp",
+      },
       deps,
     ),
   );
@@ -440,7 +571,13 @@ Deno.test("handlePull: copies file to mount path", async () => {
 
   const result = JSON.parse(
     await handlePull(
-      { action: "pull", host: "h1", remoteHome: "/home/u", localPath: "/local/img.png", remoteDest: "/home/u/dest" },
+      {
+        action: "pull",
+        host: "h1",
+        remoteHome: "/home/u",
+        localPath: "/local/img.png",
+        remoteDest: "/home/u/dest",
+      },
       deps,
     ),
   );
@@ -449,11 +586,19 @@ Deno.test("handlePull: copies file to mount path", async () => {
 });
 
 Deno.test("handlePull: appends filename when dest is directory", async () => {
-  const { deps, copies } = createFakeDeps({ statResult: { isDirectory: true } });
+  const { deps, copies } = createFakeDeps({
+    statResult: { isDirectory: true },
+  });
   await deps.mountManager.ensureMount("h1", "/home/u");
 
   await handlePull(
-    { action: "pull", host: "h1", remoteHome: "/home/u", localPath: "/local/img.png", remoteDest: "/home/u/dir" },
+    {
+      action: "pull",
+      host: "h1",
+      remoteHome: "/home/u",
+      localPath: "/local/img.png",
+      remoteDest: "/home/u/dir",
+    },
     deps,
   );
   assertEquals(copies[0].dest, "/mnt/h1/dir/img.png");
@@ -471,7 +616,10 @@ Deno.test("handleOpRead: resolves op reference", async () => {
   const { deps, calls } = createFakeDeps({ commandResults });
 
   const result = JSON.parse(
-    await handleOpRead({ action: "op-read", ref: "op://vault/item/field" }, deps),
+    await handleOpRead(
+      { action: "op-read", ref: "op://vault/item/field" },
+      deps,
+    ),
   );
   assertEquals(result.ok, true);
   assertEquals(result.value, "secret-value");
@@ -527,7 +675,10 @@ Deno.test("handleOpResolve: resolves multiple refs", async () => {
 
   const result = JSON.parse(
     await handleOpResolve(
-      { action: "op-resolve", refs: { DB: "op://v/db/url", KEY: "op://v/api/key" } },
+      {
+        action: "op-resolve",
+        refs: { DB: "op://v/db/url", KEY: "op://v/api/key" },
+      },
       deps,
     ),
   );

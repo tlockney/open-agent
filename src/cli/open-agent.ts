@@ -9,7 +9,7 @@
 //   version                   Print version
 //   help                      Show this help
 
-import { red, green, yellow, blue } from "jsr:@std/fmt@1/colors";
+import { blue, green, red, yellow } from "jsr:@std/fmt@1/colors";
 import { existsSync } from "jsr:@std/fs@1/exists";
 
 const VERSION = "0.7.0";
@@ -31,9 +31,15 @@ const AGENT_SOCK = `${HOME}/.local/share/open-agent/open-agent.sock`;
 // Resolve SCRIPT_DIR — the directory containing this script
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
 
-function info(msg: string): void { console.log(`${green("✓")} ${msg}`); }
-function warn(msg: string): void { console.log(`${yellow("⚠")} ${msg}`); }
-function step(msg: string): void { console.log(`${blue("→")} ${msg}`); }
+function info(msg: string): void {
+  console.log(`${green("✓")} ${msg}`);
+}
+function warn(msg: string): void {
+  console.log(`${yellow("⚠")} ${msg}`);
+}
+function step(msg: string): void {
+  console.log(`${blue("→")} ${msg}`);
+}
 
 function fail(msg: string): never {
   console.error(`${red("✗")} ${msg}`);
@@ -45,7 +51,11 @@ function fail(msg: string): never {
 async function run(
   cmd: string,
   args: string[],
-  opts?: { stdin?: "inherit" | "null" | "piped"; input?: Uint8Array; timeout?: number },
+  opts?: {
+    stdin?: "inherit" | "null" | "piped";
+    input?: Uint8Array;
+    timeout?: number;
+  },
 ): Promise<{ success: boolean; stdout: string; stderr: string; code: number }> {
   const command = new Deno.Command(cmd, {
     args,
@@ -90,7 +100,9 @@ async function agentSend(message: string): Promise<Record<string, unknown>> {
     const buf = new Uint8Array(65536);
     const n = await conn.read(buf);
     if (!n) throw new Error("No response from agent");
-    return JSON.parse(new TextDecoder().decode(buf.subarray(0, n)).trim()) as Record<string, unknown>;
+    return JSON.parse(
+      new TextDecoder().decode(buf.subarray(0, n)).trim(),
+    ) as Record<string, unknown>;
   } finally {
     conn.close();
   }
@@ -105,7 +117,9 @@ function loadHostAliases(): string[] {
       hostsPath = LEGACY_HOSTS_FILE;
       warn(`Using legacy hosts file at ${hostsPath}`);
     } else {
-      fail(`No hosts file found at ${HOSTS_FILE}\nCreate it with format: host_alias|project_dir|label`);
+      fail(
+        `No hosts file found at ${HOSTS_FILE}\nCreate it with format: host_alias|project_dir|label`,
+      );
     }
   }
 
@@ -162,13 +176,29 @@ async function cmdSetupRemote(target: string): Promise<void> {
   // Copy shared library modules
   const libDir = `${SCRIPT_DIR}/../lib`;
   for await (const entry of Deno.readDir(libDir)) {
-    if (entry.isFile && entry.name.endsWith(".ts") && !entry.name.endsWith("_test.ts")) {
-      await Deno.copyFile(`${libDir}/${entry.name}`, `${tmpDir}/src/lib/${entry.name}`);
+    if (
+      entry.isFile && entry.name.endsWith(".ts") &&
+      !entry.name.endsWith("_test.ts")
+    ) {
+      await Deno.copyFile(
+        `${libDir}/${entry.name}`,
+        `${tmpDir}/src/lib/${entry.name}`,
+      );
     }
   }
 
   // Copy remote CLI scripts
-  const remoteScripts = ["ropen", "rcode", "rcopy", "rpaste", "rnotify", "rop", "rpush", "rpull", "ra"];
+  const remoteScripts = [
+    "ropen",
+    "rcode",
+    "rcopy",
+    "rpaste",
+    "rnotify",
+    "rop",
+    "rpush",
+    "rpull",
+    "ra",
+  ];
   for (const script of remoteScripts) {
     const src = `${SCRIPT_DIR}/${script}.ts`;
     if (existsSync(src)) {
@@ -181,7 +211,15 @@ async function cmdSetupRemote(target: string): Promise<void> {
 
   // Create tarball
   const tarball = `${tmpDir}/deploy.tar.gz`;
-  const tarResult = await run("tar", ["-czf", tarball, "-C", tmpDir, "src", "open-agent-hook.sh", "oa-wrapper.sh"]);
+  const tarResult = await run("tar", [
+    "-czf",
+    tarball,
+    "-C",
+    tmpDir,
+    "src",
+    "open-agent-hook.sh",
+    "oa-wrapper.sh",
+  ]);
   if (!tarResult.success) fail("Failed to create deploy tarball");
 
   const remoteCmds = remoteScripts.join(" ");
@@ -193,7 +231,12 @@ async function cmdSetupRemote(target: string): Promise<void> {
 
     // Validate SSH connectivity
     const sshCheck = await run("ssh", [
-      "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, "true",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "ConnectTimeout=5",
+      host,
+      "true",
     ], { timeout: 8000 });
     if (!sshCheck.success) {
       warn(`Cannot connect to ${host} (skipping)`);
@@ -233,7 +276,9 @@ async function cmdSetupRemote(target: string): Promise<void> {
   }
 
   // Cleanup
-  try { await Deno.remove(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  try {
+    await Deno.remove(tmpDir, { recursive: true });
+  } catch { /* ignore */ }
 
   console.log();
   if (failed === 0) {
@@ -257,7 +302,8 @@ async function cmdUpdate(): Promise<void> {
   step("Checking for latest release...");
 
   const apiResult = await run("curl", [
-    "-fsSL", `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`,
+    "-fsSL",
+    `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`,
   ]);
   if (!apiResult.success) fail("Could not fetch latest release from GitHub");
 
@@ -272,9 +318,16 @@ async function cmdUpdate(): Promise<void> {
     `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${latestTag}/${REPO_NAME}-${latestTag}.tar.gz`;
 
   step(`Downloading ${tarballUrl}...`);
-  const dlResult = await run("curl", ["-fsSL", tarballUrl, "-o", `${tmpDir}/release.tar.gz`]);
+  const dlResult = await run("curl", [
+    "-fsSL",
+    tarballUrl,
+    "-o",
+    `${tmpDir}/release.tar.gz`,
+  ]);
   if (!dlResult.success) {
-    try { await Deno.remove(tmpDir, { recursive: true }); } catch { /* ignore */ }
+    try {
+      await Deno.remove(tmpDir, { recursive: true });
+    } catch { /* ignore */ }
     fail("Failed to download release tarball");
   }
 
@@ -294,7 +347,9 @@ async function cmdUpdate(): Promise<void> {
   step("Installing...");
   const installScript = `${extracted}/install.sh`;
   if (!existsSync(installScript)) {
-    try { await Deno.remove(tmpDir, { recursive: true }); } catch { /* ignore */ }
+    try {
+      await Deno.remove(tmpDir, { recursive: true });
+    } catch { /* ignore */ }
     fail("install.sh not found in release tarball");
   }
 
@@ -305,7 +360,9 @@ async function cmdUpdate(): Promise<void> {
   }
   if (installResult.stdout) console.log(installResult.stdout);
 
-  try { await Deno.remove(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  try {
+    await Deno.remove(tmpDir, { recursive: true });
+  } catch { /* ignore */ }
   info("Update complete");
 }
 

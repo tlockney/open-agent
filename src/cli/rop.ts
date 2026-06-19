@@ -4,8 +4,14 @@
 //        rop run --env-file .env -- command args...
 //        rop run -- command args...
 
-import type { Message } from "../lib/messages.ts";
-import { send, requireSock, checkResponse, getStringField, fail, isRemoteSession } from "../lib/oa.ts";
+import {
+  checkResponse,
+  fail,
+  getStringField,
+  isRemoteSession,
+  requireSock,
+  send,
+} from "../lib/oa.ts";
 
 const USAGE = `Usage: rop [--account <account>] <subcommand> [options]
 
@@ -25,7 +31,10 @@ Examples:
   rop run --env-file .env -- terraform apply
   rop run --env-file .env --env-file .env.local -- make test`;
 
-if (Deno.args.length === 0) { console.log(USAGE); Deno.exit(0); }
+if (Deno.args.length === 0) {
+  console.log(USAGE);
+  Deno.exit(0);
+}
 
 // Parse global options (can appear anywhere before or after subcommand)
 let account: string | undefined;
@@ -84,7 +93,11 @@ async function cmdRead(args: string[]): Promise<void> {
   const ref = args[0];
   if (!ref.startsWith("op://")) fail("reference must start with op://");
 
-  const response = await send({ action: "op-read", ref, ...(account && { account }) }, 30);
+  const response = await send({
+    action: "op-read",
+    ref,
+    ...(account && { account }),
+  }, 30);
   checkResponse(response);
   const value = getStringField(response, "value");
   await Deno.stdout.write(new TextEncoder().encode(value));
@@ -159,17 +172,24 @@ async function cmdRun(args: string[]): Promise<void> {
     }
     const { code } = await new Deno.Command(cmdArgs[0], {
       args: cmdArgs.slice(1),
-      stdin: "inherit", stdout: "inherit", stderr: "inherit",
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
       env: Deno.env.toObject(),
     }).output();
     Deno.exit(code);
   }
 
   // Resolve op:// references via the agent
-  const response = await send({ action: "op-resolve", refs, ...(account && { account }) }, 30);
+  const response = await send({
+    action: "op-resolve",
+    refs,
+    ...(account && { account }),
+  }, 30);
   checkResponse(response);
 
-  const resolved = response.resolved as Record<string, string> | undefined ?? {};
+  const resolved = response.resolved as Record<string, string> | undefined ??
+    {};
 
   // Build environment with resolved values
   const finalEnv = Deno.env.toObject();
@@ -183,7 +203,9 @@ async function cmdRun(args: string[]): Promise<void> {
   // Run the command
   const { code } = await new Deno.Command(cmdArgs[0], {
     args: cmdArgs.slice(1),
-    stdin: "inherit", stdout: "inherit", stderr: "inherit",
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
     env: finalEnv,
   }).output();
   Deno.exit(code);

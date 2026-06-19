@@ -5,7 +5,15 @@
 
 import { parseArgs } from "jsr:@std/cli@1/parse-args";
 import type { Message } from "../lib/messages.ts";
-import { send, requireSock, checkResponse, getStringField, fail, HOST, HOME } from "../lib/oa.ts";
+import {
+  checkResponse,
+  fail,
+  getStringField,
+  HOME,
+  HOST,
+  requireSock,
+  send,
+} from "../lib/oa.ts";
 
 const USAGE = `Usage: rpush [options] <file>
 
@@ -24,7 +32,10 @@ const args = parseArgs(Deno.args, {
   boolean: ["h"],
 });
 
-if (args.h) { console.log(USAGE); Deno.exit(0); }
+if (args.h) {
+  console.log(USAGE);
+  Deno.exit(0);
+}
 
 const positional = args._ as string[];
 if (positional.length === 0) fail("file required. See rpush -h");
