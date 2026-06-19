@@ -3,6 +3,7 @@
 // Usage: rpull ~/Downloads/image.png           # copies to current directory
 //        rpull ~/Desktop/file.txt ~/dest/dir/  # copies to specific remote directory
 
+import { buildPullMessage, CliError, parseRpullArgs } from "./args.ts";
 import {
   checkResponse,
   fail,
@@ -29,16 +30,23 @@ Examples:
   rpull ~/Downloads/image.png            # → ./image.png
   rpull ~/Desktop/notes.md ~/docs/       # → ~/docs/notes.md`;
 
-if (Deno.args[0] === "-h" || Deno.args[0] === "--help") {
+let parsed: ReturnType<typeof parseRpullArgs>;
+try {
+  parsed = parseRpullArgs(Deno.args);
+} catch (e) {
+  if (e instanceof CliError) fail(e.message);
+  throw e;
+}
+
+if (parsed.kind === "help") {
   console.log(USAGE);
   Deno.exit(0);
 }
-if (Deno.args.length === 0) fail("local path required. See rpull -h");
 
 requireSock();
 
-const localPath = Deno.args[0];
-let remoteDest = Deno.args[1] ?? Deno.cwd();
+const localPath = parsed.localPath;
+let remoteDest = parsed.remoteDest ?? Deno.cwd();
 
 // Resolve remote dest to absolute path
 try {
@@ -49,13 +57,10 @@ try {
   }
 }
 
-const response = await send({
-  action: "pull",
-  host: HOST,
-  remoteHome: HOME,
-  localPath,
-  remoteDest,
-}, 30);
+const response = await send(
+  buildPullMessage({ localPath, remoteDest, host: HOST, home: HOME }),
+  30,
+);
 
 checkResponse(response);
 console.log(`Pulled to: ${getStringField(response, "remotePath")}`);

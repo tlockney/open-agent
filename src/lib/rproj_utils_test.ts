@@ -5,6 +5,7 @@ import {
 } from "jsr:@std/assert@1";
 import {
   buildFzfEntries,
+  parseArgs,
   type ProjectEntry,
   shellQuote,
   splitHostQualifier,
@@ -167,4 +168,151 @@ Deno.test("TERMINAL_RESTORE_SEQUENCE: disables focus events and bracketed paste"
 Deno.test("TERMINAL_RESTORE_SEQUENCE: restores cursor and default G0 charset", () => {
   assertStringIncludes(TERMINAL_RESTORE_SEQUENCE, "\x1b[?25h");
   assertStringIncludes(TERMINAL_RESTORE_SEQUENCE, "\x1b(B");
+});
+
+// --- parseArgs ---
+
+const NO_OPTS = { hostFilter: null, projectName: null };
+
+Deno.test("parseArgs: no args is interactive default", () => {
+  assertEquals(parseArgs([]), {
+    command: { cmd: "default", opts: NO_OPTS },
+    debug: false,
+  });
+});
+
+Deno.test("parseArgs: bare --debug sets debug on default", () => {
+  assertEquals(parseArgs(["--debug"]), {
+    command: { cmd: "default", opts: NO_OPTS },
+    debug: true,
+  });
+});
+
+Deno.test("parseArgs: short aliases map to commands", () => {
+  assertEquals(parseArgs(["l"]).command, {
+    cmd: "list",
+    opts: NO_OPTS,
+    json: false,
+    query: "",
+  });
+  assertEquals(parseArgs(["t"]).command, { cmd: "tmux", opts: NO_OPTS });
+  assertEquals(parseArgs(["c"]).command, { cmd: "code", opts: NO_OPTS });
+  assertEquals(parseArgs(["f"]).command, { cmd: "finder", opts: NO_OPTS });
+  assertEquals(parseArgs(["s"]).command, { cmd: "status" });
+});
+
+Deno.test("parseArgs: help and status commands", () => {
+  assertEquals(parseArgs(["help"]).command, { cmd: "help" });
+  assertEquals(parseArgs(["--help"]).command, { cmd: "help" });
+  assertEquals(parseArgs(["status"]).command, { cmd: "status" });
+});
+
+Deno.test("parseArgs: open requires an argument", () => {
+  assertEquals(parseArgs(["open", "m4mini|~/proj"]).command, {
+    cmd: "open",
+    arg: "m4mini|~/proj",
+  });
+  assertEquals(parseArgs(["o", "m4mini|~/proj"]).command, {
+    cmd: "open",
+    arg: "m4mini|~/proj",
+  });
+  assertThrows(
+    () => parseArgs(["open"]),
+    Error,
+    "Usage: rproj open 'host|path'",
+  );
+});
+
+Deno.test("parseArgs: internal preview commands", () => {
+  assertEquals(parseArgs(["_preview_multi", "h|p"]).command, {
+    cmd: "preview_multi",
+    meta: "h|p",
+  });
+  assertEquals(parseArgs(["_preview", "host", "dir", "item"]).command, {
+    cmd: "preview",
+    host: "host",
+    dir: "dir",
+    item: "item",
+  });
+});
+
+Deno.test("parseArgs: list flags (json and query)", () => {
+  assertEquals(parseArgs(["list", "--json"]).command, {
+    cmd: "list",
+    opts: NO_OPTS,
+    json: true,
+    query: "",
+  });
+  assertEquals(parseArgs(["list", "-q", "metron"]).command, {
+    cmd: "list",
+    opts: NO_OPTS,
+    json: false,
+    query: "metron",
+  });
+});
+
+Deno.test("parseArgs: --host flag sets host filter", () => {
+  assertEquals(parseArgs(["list", "--host", "m4mini"]).command, {
+    cmd: "list",
+    opts: { hostFilter: "m4mini", projectName: null },
+    json: false,
+    query: "",
+  });
+});
+
+Deno.test("parseArgs: positional and -p both set project name", () => {
+  assertEquals(parseArgs(["tmux", "myproj"]).command, {
+    cmd: "tmux",
+    opts: { hostFilter: null, projectName: "myproj" },
+  });
+  assertEquals(parseArgs(["tmux", "-p", "myproj"]).command, {
+    cmd: "tmux",
+    opts: { hostFilter: null, projectName: "myproj" },
+  });
+});
+
+Deno.test("parseArgs: host-qualified project splits host and name", () => {
+  assertEquals(parseArgs(["tmux", "m4mini:personal"]).command, {
+    cmd: "tmux",
+    opts: { hostFilter: "m4mini", projectName: "personal" },
+  });
+});
+
+Deno.test("parseArgs: host given by both -h and qualifier conflict throws", () => {
+  assertThrows(
+    () => parseArgs(["tmux", "-h", "m4mini", "workmbp:personal"]),
+    Error,
+    "host given twice",
+  );
+});
+
+Deno.test("parseArgs: --debug alongside a command", () => {
+  const result = parseArgs(["list", "--debug"]);
+  assertEquals(result.debug, true);
+  assertEquals(result.command, {
+    cmd: "list",
+    opts: NO_OPTS,
+    json: false,
+    query: "",
+  });
+});
+
+Deno.test("parseArgs: unknown command throws", () => {
+  assertThrows(() => parseArgs(["bogus"]), Error, "Unknown command: bogus");
+});
+
+Deno.test("parseArgs: unknown option throws", () => {
+  assertThrows(() => parseArgs(["list", "-x"]), Error, "Unknown option: -x");
+});
+
+// Documents an existing quirk: a flag-only invocation recurses to
+// parseArgs(["default", ...]) and falls through to the unknown-command error
+// because the switch has no `case "default"`. Captured so a future fix is a
+// deliberate, visible change rather than a silent one.
+Deno.test("parseArgs: flag-only default invocation currently throws (known quirk)", () => {
+  assertThrows(
+    () => parseArgs(["--host", "m4mini"]),
+    Error,
+    "Unknown command: default",
+  );
 });

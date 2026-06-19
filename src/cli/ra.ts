@@ -8,6 +8,7 @@
 
 import { existsSync } from "jsr:@std/fs@1/exists";
 import type { Message, Response } from "../lib/messages.ts";
+import { CliError, parseRaCommand } from "./args.ts";
 import {
   fail,
   formatErrorMessage,
@@ -28,19 +29,20 @@ Commands:
   doctor            Full diagnostic: transport, daemon, per-mount probes
   help              Show this help`;
 
-const subcommand = Deno.args[0] ?? "";
+let parsed: ReturnType<typeof parseRaCommand>;
+try {
+  parsed = parseRaCommand(Deno.args);
+} catch (e) {
+  if (e instanceof CliError) fail(`${e.message}\n\n${USAGE}`);
+  throw e;
+}
 
-if (
-  !subcommand ||
-  subcommand === "help" ||
-  subcommand === "--help" ||
-  subcommand === "-h"
-) {
+if (parsed.kind === "help") {
   console.log(USAGE);
   Deno.exit(0);
 }
 
-switch (subcommand) {
+switch (parsed.command) {
   case "ping":
     await runPing();
     break;
@@ -51,13 +53,11 @@ switch (subcommand) {
     await runMounts();
     break;
   case "reset":
-    await runReset(Deno.args[1]);
+    await runReset(parsed.host);
     break;
   case "doctor":
     await runDoctor();
     break;
-  default:
-    fail(`unknown command: ${subcommand}\n\n${USAGE}`);
 }
 
 // --- Subcommand implementations ---

@@ -5,8 +5,13 @@
 // unreachable instead of silently falling back to native /usr/bin/open
 // — a remote-mount path opened locally just produces nonsense.
 
-import { parseArgs } from "jsr:@std/cli@1/parse-args";
-import type { Message } from "../lib/messages.ts";
+import {
+  buildOpenMessage,
+  CliError,
+  isUrl,
+  isVsCodeApp,
+  parseRopenFlags,
+} from "./args.ts";
 import {
   fail,
   formatErrorMessage,
@@ -29,35 +34,28 @@ Examples:
   ropen -v ~/projects/myapp          # Open folder in local VS Code via remote-ssh
   ropen https://github.com/foo/bar   # Open URL in local browser`;
 
-const args = parseArgs(Deno.args, {
-  string: ["a"],
-  boolean: ["v", "h"],
-  "--": false,
-  unknown: (opt) => {
-    if (opt.startsWith("-")) fail(`Unknown option: ${opt}`);
-    return true;
-  },
-});
+let flags: ReturnType<typeof parseRopenFlags>;
+try {
+  flags = parseRopenFlags(Deno.args);
+} catch (e) {
+  if (e instanceof CliError) fail(e.message);
+  throw e;
+}
 
-if (args.h) {
+if (flags.help) {
   console.log(USAGE);
   Deno.exit(0);
 }
 
-const positional = args._ as string[];
-if (positional.length === 0) fail("No path specified. See ropen -h for usage.");
+if (flags.positional.length === 0) {
+  fail("No path specified. See ropen -h for usage.");
+}
 
-let target = String(positional[0]);
-let app = args.a ?? "";
-let vscode = args.v;
+let target = flags.positional[0];
+const app = flags.app;
+const vscode = flags.vscode;
 
-const isVsCodeApp = app.includes("Visual Studio Code") ||
-  (app.includes("Code") && !app.includes("Xcode"));
-
-// Detect URLs
-const isUrl = /^https?:\/\//.test(target);
-
-if (!isUrl) {
+if (!isUrl(target)) {
   // Resolve to absolute path
   try {
     target = Deno.realPathSync(target);
@@ -74,9 +72,9 @@ if (!isUrl) {
 // remote; the agent-unreachable-while-remote case below still errors loudly.
 if (!isRemoteSession()) {
   let cmdArgs: string[];
-  if (isUrl) {
+  if (isUrl(target)) {
     cmdArgs = ["open", target];
-  } else if (vscode || isVsCodeApp) {
+  } else if (vscode || isVsCodeApp(app)) {
     cmdArgs = ["code", target];
   } else if (app) {
     cmdArgs = ["open", "-a", app, target];
@@ -92,23 +90,8 @@ if (!isRemoteSession()) {
   Deno.exit(code);
 }
 
-// Detect VS Code by app name
-if (isVsCodeApp) {
-  vscode = true;
-  app = "";
-}
-
-// Build message
-let msg: Message;
-if (isUrl) {
-  msg = { action: "open-url", url: target };
-} else if (vscode) {
-  msg = { action: "open-vscode", host: HOST, path: target };
-} else if (app) {
-  msg = { action: "open", host: HOST, remoteHome: HOME, path: target, app };
-} else {
-  msg = { action: "open", host: HOST, remoteHome: HOME, path: target };
-}
+// Build message (URL → open-url; VS Code app name or -v → open-vscode; etc.)
+const msg = buildOpenMessage({ target, app, vscode, host: HOST, home: HOME });
 
 // Send to agent (tries Unix socket, then TCP)
 let response: import("../lib/messages.ts").Response;

@@ -1,6 +1,7 @@
 // rproj_utils.ts — Pure utility functions extracted from rproj for testability.
 
 import { basename } from "jsr:@std/path@1/basename";
+import { parseArgs as denoParseArgs } from "jsr:@std/cli@1/parse-args";
 
 // --- Types ---
 
@@ -143,4 +144,157 @@ export function buildFzfEntries(projects: ProjectEntry[]): string {
   flushGroup(currentLabel);
 
   return lines.join("\n");
+}
+
+// --- Argument parsing ---
+
+export interface Opts {
+  hostFilter: string | null;
+  projectName: string | null;
+}
+
+export type Command =
+  | { cmd: "list"; opts: Opts; json: boolean; query: string }
+  | { cmd: "tmux"; opts: Opts }
+  | { cmd: "code"; opts: Opts }
+  | { cmd: "finder"; opts: Opts }
+  | { cmd: "default"; opts: Opts }
+  | { cmd: "status" }
+  | { cmd: "help" }
+  | { cmd: "setup"; opts: Opts }
+  | { cmd: "open"; arg: string }
+  | { cmd: "preview"; host: string; dir: string; item: string }
+  | { cmd: "preview_multi"; meta: string };
+
+/** Resolved command plus whether `--debug` was requested. */
+export interface ParsedCommand {
+  command: Command;
+  debug: boolean;
+}
+
+/**
+ * Parse rproj's argv into a Command. Throws Error on bad input — the caller's
+ * top-level catch renders it (matching the previous error() behavior). The
+ * `debug` flag is returned rather than mutating a module global, which keeps
+ * this function pure and testable.
+ *
+ * Note: a flag-only default invocation (e.g. `rproj --host foo`) currently
+ * recurses to `parseArgs(["default", ...])`, which falls through to the
+ * "Unknown command: default" error because there is no `case "default"` in
+ * the switch. This is preserved here as the existing behavior.
+ */
+export function parseArgs(args: string[]): ParsedCommand {
+  const DEFAULT_OPTS: Opts = { hostFilter: null, projectName: null };
+  if (args.length === 0) {
+    return { command: { cmd: "default", opts: DEFAULT_OPTS }, debug: false };
+  }
+  // Handle bare --debug with no subcommand
+  if (args.length === 1 && args[0] === "--debug") {
+    return { command: { cmd: "default", opts: DEFAULT_OPTS }, debug: true };
+  }
+
+  const first = args[0];
+
+  // Internal preview commands (called by fzf)
+  if (first === "_preview_multi") {
+    return {
+      command: { cmd: "preview_multi", meta: args[1] ?? "" },
+      debug: false,
+    };
+  }
+  if (first === "_preview") {
+    return {
+      command: {
+        cmd: "preview",
+        host: args[1] ?? "",
+        dir: args[2] ?? "",
+        item: args[3] ?? "",
+      },
+      debug: false,
+    };
+  }
+
+  // Map short aliases
+  const cmdMap: Record<string, string> = {
+    l: "list",
+    t: "tmux",
+    c: "code",
+    f: "finder",
+    s: "status",
+    o: "open",
+  };
+  const cmdName = cmdMap[first] ?? first;
+
+  if (cmdName === "help" || cmdName === "--help") {
+    return { command: { cmd: "help" }, debug: false };
+  }
+  if (cmdName === "status") return { command: { cmd: "status" }, debug: false };
+  if (cmdName === "open") {
+    const arg = args[1];
+    if (arg === undefined) throw new Error("Usage: rproj open 'host|path'");
+    return { command: { cmd: "open", arg }, debug: false };
+  }
+
+  // Parse flags from remaining args
+  const parsed = denoParseArgs(args.slice(1), {
+    string: ["host", "p", "q"],
+    boolean: ["json", "help", "debug"],
+    alias: { h: "host" },
+    unknown: (opt) => {
+      if (opt.startsWith("-")) throw new Error(`Unknown option: ${opt}`);
+      return true;
+    },
+  });
+
+  const debug = Boolean(parsed.debug);
+
+  if (parsed.help) return { command: { cmd: "help" }, debug };
+
+  const flagHost = (parsed.host as string | undefined) ?? null;
+  const rawProject = (parsed.p as string | undefined) ??
+    (parsed._[0] as string | undefined) ?? null;
+
+  // A project token may carry a `host:` prefix (e.g. `m4mini:personal`).
+  // Resolve it against the `-h` flag: the prefix sets the host filter, but
+  // disagreeing with an explicit `-h` is a mistake worth flagging.
+  let hostFilter = flagHost;
+  let projectName = rawProject;
+  if (rawProject !== null) {
+    const split = splitHostQualifier(rawProject);
+    if (split.host !== null) {
+      if (flagHost !== null && flagHost !== split.host) {
+        throw new Error(`host given twice (-h ${flagHost} vs ${split.host}:)`);
+      }
+      hostFilter = split.host;
+    }
+    projectName = split.name === "" ? null : split.name;
+  }
+
+  const opts: Opts = { hostFilter, projectName };
+
+  switch (cmdName) {
+    case "list":
+      return {
+        command: {
+          cmd: "list",
+          opts,
+          json: !!parsed.json,
+          query: (parsed.q as string | undefined) ?? "",
+        },
+        debug,
+      };
+    case "tmux":
+      return { command: { cmd: "tmux", opts }, debug };
+    case "code":
+      return { command: { cmd: "code", opts }, debug };
+    case "finder":
+      return { command: { cmd: "finder", opts }, debug };
+    case "setup":
+      return { command: { cmd: "setup", opts }, debug };
+    default:
+      if (first.startsWith("-")) {
+        return parseArgs(["default", ...args]);
+      }
+      throw new Error(`Unknown command: ${first}. Use 'rproj help' for usage.`);
+  }
 }
