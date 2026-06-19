@@ -33,6 +33,26 @@ export function shellQuote(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
+// --- Host-qualified project names ---
+
+/**
+ * Split a possibly host-qualified project token into its host and name.
+ *
+ * Strict: splits on the FIRST colon only, so `host:sub:dir` yields
+ * host `host` and name `sub:dir`. A token with no colon has no host.
+ * A trailing colon (`host:`) yields an empty name, which callers treat
+ * as "pin the host, pick the project interactively".
+ *
+ * Throws on a leading colon (`:name`) — an empty host is always a
+ * mistake rather than a meaningful selection.
+ */
+export function splitHostQualifier(raw: string): { host: string | null; name: string } {
+  const idx = raw.indexOf(":");
+  if (idx === -1) return { host: null, name: raw };
+  if (idx === 0) throw new Error(`empty host in '${raw}' (expected 'host:project')`);
+  return { host: raw.slice(0, idx), name: raw.slice(idx + 1) };
+}
+
 // --- Terminal restore ---
 
 /**
