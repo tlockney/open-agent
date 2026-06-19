@@ -1,4 +1,8 @@
-import { assertEquals, assertStringIncludes, assertThrows } from "jsr:@std/assert";
+import {
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "jsr:@std/assert@1";
 import {
   buildFzfEntries,
   type ProjectEntry,
@@ -10,11 +14,17 @@ import {
 // --- splitHostQualifier ---
 
 Deno.test("splitHostQualifier: no colon is a bare project name", () => {
-  assertEquals(splitHostQualifier("personal"), { host: null, name: "personal" });
+  assertEquals(splitHostQualifier("personal"), {
+    host: null,
+    name: "personal",
+  });
 });
 
 Deno.test("splitHostQualifier: host:name splits into both parts", () => {
-  assertEquals(splitHostQualifier("m4mini:personal"), { host: "m4mini", name: "personal" });
+  assertEquals(splitHostQualifier("m4mini:personal"), {
+    host: "m4mini",
+    name: "personal",
+  });
 });
 
 Deno.test("splitHostQualifier: trailing colon yields empty name", () => {
@@ -22,7 +32,10 @@ Deno.test("splitHostQualifier: trailing colon yields empty name", () => {
 });
 
 Deno.test("splitHostQualifier: splits on the first colon only", () => {
-  assertEquals(splitHostQualifier("m4mini:sub:dir"), { host: "m4mini", name: "sub:dir" });
+  assertEquals(splitHostQualifier("m4mini:sub:dir"), {
+    host: "m4mini",
+    name: "sub:dir",
+  });
 });
 
 Deno.test("splitHostQualifier: empty string is a bare (empty) name", () => {
@@ -71,7 +84,12 @@ Deno.test("buildFzfEntries: empty list", () => {
 
 Deno.test("buildFzfEntries: single parent entry", () => {
   const projects: ProjectEntry[] = [
-    { host: "h1", baseDir: "/src/projects", projectPath: "/src/projects", label: "Work" },
+    {
+      host: "h1",
+      baseDir: "/src/projects",
+      projectPath: "/src/projects",
+      label: "Work",
+    },
   ];
   const result = buildFzfEntries(projects);
   assertEquals(result, "h1|/src/projects\t\u{1F4C2} Work");
@@ -97,8 +115,18 @@ Deno.test("buildFzfEntries: multiple hosts/labels", () => {
   const projects: ProjectEntry[] = [
     { host: "h1", baseDir: "/src", projectPath: "/src", label: "Work" },
     { host: "h1", baseDir: "/src", projectPath: "/src/app", label: "Work" },
-    { host: "h2", baseDir: "/home/dev", projectPath: "/home/dev", label: "Personal" },
-    { host: "h2", baseDir: "/home/dev", projectPath: "/home/dev/blog", label: "Personal" },
+    {
+      host: "h2",
+      baseDir: "/home/dev",
+      projectPath: "/home/dev",
+      label: "Personal",
+    },
+    {
+      host: "h2",
+      baseDir: "/home/dev",
+      projectPath: "/home/dev/blog",
+      label: "Personal",
+    },
   ];
   const lines = buildFzfEntries(projects).split("\n");
   assertEquals(lines.length, 4);

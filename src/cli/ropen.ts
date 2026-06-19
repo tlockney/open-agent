@@ -7,7 +7,14 @@
 
 import { parseArgs } from "jsr:@std/cli@1/parse-args";
 import type { Message } from "../lib/messages.ts";
-import { fail, formatErrorMessage, HOME, HOST, isRemoteSession, send } from "../lib/oa.ts";
+import {
+  fail,
+  formatErrorMessage,
+  HOME,
+  HOST,
+  isRemoteSession,
+  send,
+} from "../lib/oa.ts";
 
 const USAGE = `Usage: ropen [options] <path|url>
 
@@ -32,7 +39,10 @@ const args = parseArgs(Deno.args, {
   },
 });
 
-if (args.h) { console.log(USAGE); Deno.exit(0); }
+if (args.h) {
+  console.log(USAGE);
+  Deno.exit(0);
+}
 
 const positional = args._ as string[];
 if (positional.length === 0) fail("No path specified. See ropen -h for usage.");

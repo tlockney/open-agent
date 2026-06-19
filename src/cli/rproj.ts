@@ -15,7 +15,7 @@
 //   open (o)   — Open from Alfred (host|path format)
 //   help       — Show this help
 
-import { red, green, blue, yellow } from "jsr:@std/fmt@1/colors";
+import { blue, green, red, yellow } from "jsr:@std/fmt@1/colors";
 import { basename } from "jsr:@std/path@1/basename";
 import { existsSync } from "jsr:@std/fs@1/exists";
 import { parseArgs as denoParseArgs } from "jsr:@std/cli@1/parse-args";
@@ -86,7 +86,12 @@ function debug(msg: string): void {
 function error(msg: string): never {
   if (jsonMode) {
     console.log(JSON.stringify({
-      items: [{ title: "Error", subtitle: msg, valid: false, icon: { path: "error.png" } }],
+      items: [{
+        title: "Error",
+        subtitle: msg,
+        valid: false,
+        icon: { path: "error.png" },
+      }],
     }));
     Deno.exit(0);
   }
@@ -106,7 +111,11 @@ interface RunResult {
 async function run(
   cmd: string,
   args: string[],
-  opts?: { timeout?: number; stdin?: "inherit" | "null" | "piped"; input?: Uint8Array },
+  opts?: {
+    timeout?: number;
+    stdin?: "inherit" | "null" | "piped";
+    input?: Uint8Array;
+  },
 ): Promise<RunResult> {
   const signal = opts?.timeout ? AbortSignal.timeout(opts.timeout) : undefined;
   const command = new Deno.Command(cmd, {
@@ -120,7 +129,9 @@ async function run(
     const proc = command.spawn();
     if (signal) {
       signal.addEventListener("abort", () => {
-        try { proc.kill("SIGKILL"); } catch { /* already exited */ }
+        try {
+          proc.kill("SIGKILL");
+        } catch { /* already exited */ }
       }, { once: true });
     }
     if (opts?.input) {
@@ -130,7 +141,12 @@ async function run(
     }
     child = await proc.output();
   } catch {
-    return { success: false, stdout: "", stderr: "command timed out or failed", code: 1 };
+    return {
+      success: false,
+      stdout: "",
+      stderr: "command timed out or failed",
+      code: 1,
+    };
   }
   return {
     success: child.success,
@@ -156,7 +172,10 @@ async function exec(cmd: string, args: string[]): Promise<never> {
 // when the SSH connection is killed by a network drop and remote tmux never
 // gets to emit its terminal-restore sequences. Without this, the local
 // terminal is left in alt-screen + raw mode and the user has to run `reset`.
-async function execWithTtyRestore(cmd: string, args: string[]): Promise<number> {
+async function execWithTtyRestore(
+  cmd: string,
+  args: string[],
+): Promise<number> {
   const isTty = Deno.stdin.isTerminal();
 
   let savedStty: string | null = null;
@@ -179,7 +198,9 @@ async function execWithTtyRestore(cmd: string, args: string[]): Promise<number> 
   const forwarded: Deno.Signal[] = ["SIGTERM", "SIGHUP"];
   const signalHandlers = forwarded.map((sig) => {
     const fn = () => {
-      try { child.kill(sig); } catch { /* already exited */ }
+      try {
+        child.kill(sig);
+      } catch { /* already exited */ }
     };
     Deno.addSignalListener(sig, fn);
     return { sig, fn };
@@ -215,13 +236,14 @@ async function execWithTtyRestore(cmd: string, args: string[]): Promise<number> 
   }
 }
 
-
 async function agentSend(message: string): Promise<Record<string, unknown>> {
   let conn: Deno.UnixConn;
   try {
     conn = await Deno.connect({ transport: "unix", path: AGENT_SOCK });
   } catch {
-    throw new Error(`Agent socket not found at ${AGENT_SOCK}\n  Is open-agent running? Check: launchctl list | grep open-agent`);
+    throw new Error(
+      `Agent socket not found at ${AGENT_SOCK}\n  Is open-agent running? Check: launchctl list | grep open-agent`,
+    );
   }
   try {
     await conn.write(new TextEncoder().encode(message + "\n"));
@@ -283,10 +305,16 @@ function loadHosts(hostFilter: string | null): HostEntry[] {
   }
 
   if (hosts.length === 0) {
-    error(`No hosts file found. Create ${OA_CONFIG_DIR}/remote-hosts with format: host|dir|label`);
+    error(
+      `No hosts file found. Create ${OA_CONFIG_DIR}/remote-hosts with format: host|dir|label`,
+    );
   }
 
-  debug(`Loaded ${hosts.length} host entries: ${hosts.map((h) => `${h.alias} (${h.dir})`).join(", ")}`);
+  debug(
+    `Loaded ${hosts.length} host entries: ${
+      hosts.map((h) => `${h.alias} (${h.dir})`).join(", ")
+    }`,
+  );
 
   if (hostFilter) {
     hosts = hosts.filter((h) => h.alias === hostFilter);
@@ -302,15 +330,19 @@ function loadHosts(hostFilter: string | null): HostEntry[] {
 // Common SSH options for discovery commands: bypass multiplexing so that
 // ConnectTimeout is respected even when a hung ControlMaster exists.
 const SSH_DISCOVERY_OPTS = [
-  "-o", "BatchMode=yes",
-  "-o", "ConnectTimeout=3",
-  "-o", "ControlPath=none",
+  "-o",
+  "BatchMode=yes",
+  "-o",
+  "ConnectTimeout=3",
+  "-o",
+  "ControlPath=none",
 ];
 
 async function sshTestDir(host: string, path: string): Promise<boolean> {
   const result = await run("ssh", [
     ...SSH_DISCOVERY_OPTS,
-    host, `test -d ${shellQuote(path)}`,
+    host,
+    `test -d ${shellQuote(path)}`,
   ], { timeout: SSH_TIMEOUT_MS });
   return result.success;
 }
@@ -319,10 +351,15 @@ async function sshListDirs(host: string, dir: string): Promise<string[]> {
   debug(`sshListDirs: ${host}:${dir}`);
   const result = await run("ssh", [
     ...SSH_DISCOVERY_OPTS,
-    host, `find ${shellQuote(dir)} -maxdepth 1 -mindepth 1 -type d -not -name '.*' | sort`,
+    host,
+    `find ${
+      shellQuote(dir)
+    } -maxdepth 1 -mindepth 1 -type d -not -name '.*' | sort`,
   ], { timeout: SSH_TIMEOUT_MS });
   if (!result.success) {
-    debug(`sshListDirs FAILED for ${host}:${dir} — code=${result.code}, stderr=${result.stderr}`);
+    debug(
+      `sshListDirs FAILED for ${host}:${dir} — code=${result.code}, stderr=${result.stderr}`,
+    );
     return [];
   }
   const dirs = result.stdout.split("\n").filter(Boolean);
@@ -332,10 +369,16 @@ async function sshListDirs(host: string, dir: string): Promise<string[]> {
 
 async function sshGetHome(host: string): Promise<string> {
   const result = await run("ssh", [
-    "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
-    host, "echo $HOME",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=3",
+    host,
+    "echo $HOME",
   ], { timeout: SSH_TIMEOUT_MS });
-  if (!result.success) throw new Error(`Could not determine remote home on ${host}`);
+  if (!result.success) {
+    throw new Error(`Could not determine remote home on ${host}`);
+  }
   return result.stdout;
 }
 
@@ -348,12 +391,24 @@ async function discoverProjects(hosts: HostEntry[]): Promise<ProjectEntry[]> {
       debug(`Discovering on ${entry.alias} (${entry.label}): ${entry.dir}`);
       const dirs = await sshListDirs(entry.alias, entry.dir);
       const entries: ProjectEntry[] = [
-        { host: entry.alias, baseDir: entry.dir, projectPath: entry.dir, label: entry.label },
+        {
+          host: entry.alias,
+          baseDir: entry.dir,
+          projectPath: entry.dir,
+          label: entry.label,
+        },
       ];
       for (const d of dirs) {
-        entries.push({ host: entry.alias, baseDir: entry.dir, projectPath: d, label: entry.label });
+        entries.push({
+          host: entry.alias,
+          baseDir: entry.dir,
+          projectPath: d,
+          label: entry.label,
+        });
       }
-      debug(`${entry.alias} (${entry.label}): ${entries.length} entries (1 parent + ${dirs.length} children)`);
+      debug(
+        `${entry.alias} (${entry.label}): ${entries.length} entries (1 parent + ${dirs.length} children)`,
+      );
       return entries;
     }),
   );
@@ -452,17 +507,25 @@ async function resolveProjectOnHost(
     const candidate = `${dir}/${projectName}`;
     return (await sshTestDir(hostAlias, candidate)) ? candidate : null;
   });
-  const found = (await Promise.all(probes)).filter((p): p is string => p !== null);
+  const found = (await Promise.all(probes)).filter((p): p is string =>
+    p !== null
+  );
 
-  if (found.length === 0) error(`Project '${projectName}' not found on ${hostAlias}`);
+  if (found.length === 0) {
+    error(`Project '${projectName}' not found on ${hostAlias}`);
+  }
   if (found.length === 1) return { host: hostAlias, path: found[0] };
 
   // Multiple matches on same host — let user pick
   const selection = await fzfSelectSimple(found, {
     prompt: "Multiple matches: ",
-    header: `Project '${projectName}' found in multiple directories on ${hostAlias}`,
+    header:
+      `Project '${projectName}' found in multiple directories on ${hostAlias}`,
   });
-  if (!selection) { console.log("Cancelled."); Deno.exit(0); }
+  if (!selection) {
+    console.log("Cancelled.");
+    Deno.exit(0);
+  }
   return { host: hostAlias, path: selection };
 }
 
@@ -505,7 +568,10 @@ async function resolveProjectAcrossHosts(
     header: `Project '${projectName}' found on multiple hosts`,
     height: "30%",
   });
-  if (!selected) { console.log("Cancelled."); Deno.exit(0); }
+  if (!selected) {
+    console.log("Cancelled.");
+    Deno.exit(0);
+  }
   const selectedHost = selected.split("\t")[0];
   return matches.find((m) => m.host === selectedHost)!;
 }
@@ -516,12 +582,20 @@ async function getProjectSelection(
 ): Promise<ProjectMatch> {
   if (opts.projectName) {
     if (opts.hostFilter) {
-      const match = await resolveProjectOnHost(hosts, opts.hostFilter, opts.projectName);
+      const match = await resolveProjectOnHost(
+        hosts,
+        opts.hostFilter,
+        opts.projectName,
+      );
       info(`Using project: ${opts.projectName} on ${match.host}`);
       return match;
     }
     if (hosts.length === 1 || new Set(hosts.map((h) => h.alias)).size === 1) {
-      const match = await resolveProjectOnHost(hosts, hosts[0].alias, opts.projectName);
+      const match = await resolveProjectOnHost(
+        hosts,
+        hosts[0].alias,
+        opts.projectName,
+      );
       info(`Using project: ${opts.projectName} on ${match.host}`);
       return match;
     }
@@ -538,7 +612,11 @@ async function getProjectSelection(
 
 // --- Subcommands ---
 
-async function cmdList(opts: Opts, isJson: boolean, query: string): Promise<void> {
+async function cmdList(
+  opts: Opts,
+  isJson: boolean,
+  query: string,
+): Promise<void> {
   const hosts = loadHosts(opts.hostFilter);
   info("Discovering projects...");
   const projects = await discoverProjects(hosts);
@@ -547,7 +625,9 @@ async function cmdList(opts: Opts, isJson: boolean, query: string): Promise<void
     const items = projects
       .filter((p) => {
         if (!query) return true;
-        return basename(p.projectPath).toLowerCase().includes(query.toLowerCase());
+        return basename(p.projectPath).toLowerCase().includes(
+          query.toLowerCase(),
+        );
       })
       .map((p) => {
         const name = basename(p.projectPath);
@@ -645,7 +725,10 @@ async function cmdDefault(opts: Opts): Promise<void> {
     prompt: "Action: ",
     header: `Open '${projectDisplay}' (${host}) with:`,
   });
-  if (!action) { console.log("Cancelled."); Deno.exit(0); }
+  if (!action) {
+    console.log("Cancelled.");
+    Deno.exit(0);
+  }
 
   switch (action) {
     case "tmux": {
@@ -657,6 +740,7 @@ async function cmdDefault(opts: Opts): Promise<void> {
       );
       Deno.exit(code);
     }
+    // falls through (unreachable): Deno.exit() above never returns
     case "code":
       success(`Opening ${path} in VS Code...`);
       await exec("code", ["--remote", `ssh-remote+${host}`, path]);
@@ -665,7 +749,9 @@ async function cmdDefault(opts: Opts): Promise<void> {
       info("Resolving remote home directory...");
       const remoteHome = await sshGetHome(host);
       success(`Opening ${path} in Finder...`);
-      const response = await agentSend(JSON.stringify({ action: "open", host, remoteHome, path }));
+      const response = await agentSend(
+        JSON.stringify({ action: "open", host, remoteHome, path }),
+      );
       if (response.ok === true && typeof response.localPath === "string") {
         success(`Opened: ${response.localPath}`);
       } else {
@@ -681,7 +767,8 @@ async function cmdStatus(): Promise<void> {
 
   console.log("Agent: running");
 
-  const sessions = response.sessions as Record<string, unknown> | undefined ?? {};
+  const sessions = response.sessions as Record<string, unknown> | undefined ??
+    {};
   const mounts = response.mounts as Record<string, unknown> | undefined ?? {};
 
   console.log(`Sessions: ${Object.keys(sessions).length} active`);
@@ -692,7 +779,9 @@ async function cmdStatus(): Promise<void> {
 
   console.log(`Mounts: ${Object.keys(mounts).length} active`);
   for (const [host, info] of Object.entries(mounts)) {
-    const mountPath = typeof info === "string" ? info : (info as Record<string, unknown>)?.path ?? "unknown";
+    const mountPath = typeof info === "string"
+      ? info
+      : (info as Record<string, unknown>)?.path ?? "unknown";
     console.log(`  ${host}: ${mountPath}`);
   }
 }
@@ -715,11 +804,15 @@ Host ${entry.alias}
   }
 
   console.log();
-  console.log("# Add the above to ~/.ssh/config (optional — SetEnv requires AcceptEnv on the remote sshd).");
+  console.log(
+    "# Add the above to ~/.ssh/config (optional — SetEnv requires AcceptEnv on the remote sshd).",
+  );
   console.log();
   console.log("# Alternatively, create an identity file on each remote host:");
   for (const alias of seen) {
-    console.log(`#   ssh ${alias} 'mkdir -p ~/.config/open-agent && echo ${alias} > ~/.config/open-agent/identity'`);
+    console.log(
+      `#   ssh ${alias} 'mkdir -p ~/.config/open-agent && echo ${alias} > ~/.config/open-agent/identity'`,
+    );
   }
   console.log("#");
   console.log("# The hook resolves host identity in this order:");
@@ -740,7 +833,9 @@ async function cmdOpen(arg: string): Promise<void> {
 async function sshPreview(host: string, path: string): Promise<void> {
   const p = shellQuote(path);
   const result = await run("ssh", [
-    "-o", "ConnectTimeout=2", host,
+    "-o",
+    "ConnectTimeout=2",
+    host,
     `echo ${p}; echo; ` +
     `if git -C ${p} rev-parse --git-dir >/dev/null 2>&1; then ` +
     `echo 'Branch:'; git -C ${p} branch --show-current 2>/dev/null; echo; ` +
@@ -755,7 +850,11 @@ async function cmdPreviewMulti(meta: string): Promise<void> {
   await sshPreview(host, pathParts.join("|"));
 }
 
-async function cmdPreview(host: string, dir: string, item: string): Promise<void> {
+async function cmdPreview(
+  host: string,
+  dir: string,
+  item: string,
+): Promise<void> {
   if (item.startsWith("\u{1F4C2}")) {
     await sshPreview(host, dir);
   } else {
@@ -814,7 +913,9 @@ Examples:
 // --- Argument Parsing ---
 
 function parseArgs(args: string[]): Command {
-  if (args.length === 0) return { cmd: "default", opts: { hostFilter: null, projectName: null } };
+  if (args.length === 0) {
+    return { cmd: "default", opts: { hostFilter: null, projectName: null } };
+  }
   // Handle bare --debug with no subcommand
   if (args.length === 1 && args[0] === "--debug") {
     debugMode = true;
@@ -828,18 +929,33 @@ function parseArgs(args: string[]): Command {
     return { cmd: "preview_multi", meta: args[1] ?? "" };
   }
   if (first === "_preview") {
-    return { cmd: "preview", host: args[1] ?? "", dir: args[2] ?? "", item: args[3] ?? "" };
+    return {
+      cmd: "preview",
+      host: args[1] ?? "",
+      dir: args[2] ?? "",
+      item: args[3] ?? "",
+    };
   }
 
   // Map short aliases
   const cmdMap: Record<string, string> = {
-    l: "list", t: "tmux", c: "code", f: "finder", s: "status", o: "open",
+    l: "list",
+    t: "tmux",
+    c: "code",
+    f: "finder",
+    s: "status",
+    o: "open",
   };
   const cmdName = cmdMap[first] ?? first;
 
   if (cmdName === "help" || cmdName === "--help") return { cmd: "help" };
   if (cmdName === "status") return { cmd: "status" };
-  if (cmdName === "open") return { cmd: "open", arg: args[1] ?? error("Usage: rproj open 'host|path'") };
+  if (cmdName === "open") {
+    return {
+      cmd: "open",
+      arg: args[1] ?? error("Usage: rproj open 'host|path'"),
+    };
+  }
 
   // Parse flags from remaining args
   const parsed = denoParseArgs(args.slice(1), {
@@ -857,7 +973,8 @@ function parseArgs(args: string[]): Command {
   if (parsed.help) return { cmd: "help" };
 
   const flagHost = (parsed.host as string | undefined) ?? null;
-  const rawProject = (parsed.p as string | undefined) ?? (parsed._ [0] as string | undefined) ?? null;
+  const rawProject = (parsed.p as string | undefined) ??
+    (parsed._[0] as string | undefined) ?? null;
 
   // A project token may carry a `host:` prefix (e.g. `m4mini:personal`).
   // Resolve it against the `-h` flag: the prefix sets the host filter, but
@@ -883,11 +1000,21 @@ function parseArgs(args: string[]): Command {
   const opts: Opts = { hostFilter, projectName };
 
   switch (cmdName) {
-    case "list": return { cmd: "list", opts, json: !!parsed.json, query: (parsed.q as string | undefined) ?? "" };
-    case "tmux": return { cmd: "tmux", opts };
-    case "code": return { cmd: "code", opts };
-    case "finder": return { cmd: "finder", opts };
-    case "setup": return { cmd: "setup", opts };
+    case "list":
+      return {
+        cmd: "list",
+        opts,
+        json: !!parsed.json,
+        query: (parsed.q as string | undefined) ?? "",
+      };
+    case "tmux":
+      return { cmd: "tmux", opts };
+    case "code":
+      return { cmd: "code", opts };
+    case "finder":
+      return { cmd: "finder", opts };
+    case "setup":
+      return { cmd: "setup", opts };
     default:
       if (first.startsWith("-")) {
         return parseArgs(["default", ...args]);
@@ -947,7 +1074,12 @@ main().catch((err: unknown) => {
   const msg = err instanceof Error ? err.message : String(err);
   if (jsonMode) {
     console.log(JSON.stringify({
-      items: [{ title: "Error", subtitle: msg, valid: false, icon: { path: "error.png" } }],
+      items: [{
+        title: "Error",
+        subtitle: msg,
+        valid: false,
+        icon: { path: "error.png" },
+      }],
     }));
     Deno.exit(0);
   }

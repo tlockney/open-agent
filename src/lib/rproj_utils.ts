@@ -46,10 +46,14 @@ export function shellQuote(s: string): string {
  * Throws on a leading colon (`:name`) — an empty host is always a
  * mistake rather than a meaningful selection.
  */
-export function splitHostQualifier(raw: string): { host: string | null; name: string } {
+export function splitHostQualifier(
+  raw: string,
+): { host: string | null; name: string } {
   const idx = raw.indexOf(":");
   if (idx === -1) return { host: null, name: raw };
-  if (idx === 0) throw new Error(`empty host in '${raw}' (expected 'host:project')`);
+  if (idx === 0) {
+    throw new Error(`empty host in '${raw}' (expected 'host:project')`);
+  }
   return { host: raw.slice(0, idx), name: raw.slice(idx + 1) };
 }
 
@@ -79,21 +83,20 @@ export function splitHostQualifier(raw: string): { host: string | null; name: st
  * and a too-narrow cleanup leaves the terminal still emitting
  * `CSI Cb;Cx;Cy M` events that the user's shell then echoes as text.
  */
-export const TERMINAL_RESTORE_SEQUENCE =
-  "\x1b[?1049l" +   // leave alternate screen buffer
-  "\x1b[?9l" +      // X10 mouse tracking off (legacy)
-  "\x1b[?1000l" +   // VT200 button-event mouse off
-  "\x1b[?1001l" +   // highlight mouse tracking off
-  "\x1b[?1002l" +   // cell-motion mouse tracking off
-  "\x1b[?1003l" +   // all-motion mouse tracking off
-  "\x1b[?1004l" +   // focus event reporting off
-  "\x1b[?1005l" +   // UTF-8 mouse encoding off
-  "\x1b[?1006l" +   // SGR mouse encoding off
-  "\x1b[?1015l" +   // URxvt mouse encoding off
-  "\x1b[?1016l" +   // SGR-Pixels mouse encoding off
-  "\x1b[?2004l" +   // bracketed paste mode off
-  "\x1b[?25h" +     // show cursor
-  "\x1b(B";         // designate G0 to ASCII
+export const TERMINAL_RESTORE_SEQUENCE = "\x1b[?1049l" + // leave alternate screen buffer
+  "\x1b[?9l" + // X10 mouse tracking off (legacy)
+  "\x1b[?1000l" + // VT200 button-event mouse off
+  "\x1b[?1001l" + // highlight mouse tracking off
+  "\x1b[?1002l" + // cell-motion mouse tracking off
+  "\x1b[?1003l" + // all-motion mouse tracking off
+  "\x1b[?1004l" + // focus event reporting off
+  "\x1b[?1005l" + // UTF-8 mouse encoding off
+  "\x1b[?1006l" + // SGR mouse encoding off
+  "\x1b[?1015l" + // URxvt mouse encoding off
+  "\x1b[?1016l" + // SGR-Pixels mouse encoding off
+  "\x1b[?2004l" + // bracketed paste mode off
+  "\x1b[?25h" + // show cursor
+  "\x1b(B"; // designate G0 to ASCII
 
 // --- fzf formatting ---
 
@@ -116,7 +119,9 @@ export function buildFzfEntries(projects: ProjectEntry[]): string {
         lines.push(`${entry.meta}\t\u{1F4C2} ${label}`);
       } else {
         childIdx++;
-        const connector = childIdx === children.length ? "\u2514\u2500\u2500" : "\u251C\u2500\u2500";
+        const connector = childIdx === children.length
+          ? "\u2514\u2500\u2500"
+          : "\u251C\u2500\u2500";
         lines.push(`${entry.meta}\t   ${connector} ${entry.name}`);
       }
     }

@@ -5,16 +5,40 @@
 // --- Message types ---
 
 export type Message =
-  | { action: "open"; host: string; remoteHome: string; path: string; app?: string }
+  | {
+    action: "open";
+    host: string;
+    remoteHome: string;
+    path: string;
+    app?: string;
+  }
   | { action: "open-vscode"; host: string; path: string }
   | { action: "connect"; host: string; remoteHome: string; sessionId: string }
   | { action: "disconnect"; host: string; sessionId: string }
   | { action: "copy"; content: string }
   | { action: "paste" }
-  | { action: "notify"; title: string; message?: string; subtitle?: string; sound?: string }
+  | {
+    action: "notify";
+    title: string;
+    message?: string;
+    subtitle?: string;
+    sound?: string;
+  }
   | { action: "open-url"; url: string }
-  | { action: "push"; host: string; remoteHome: string; path: string; dest?: string }
-  | { action: "pull"; host: string; remoteHome: string; localPath: string; remoteDest: string }
+  | {
+    action: "push";
+    host: string;
+    remoteHome: string;
+    path: string;
+    dest?: string;
+  }
+  | {
+    action: "pull";
+    host: string;
+    remoteHome: string;
+    localPath: string;
+    remoteDest: string;
+  }
   | { action: "op-read"; ref: string; account?: string }
   | { action: "op-resolve"; refs: Record<string, string>; account?: string }
   | { action: "status" }
@@ -81,7 +105,9 @@ export function parseMessage(raw: unknown): Message {
 
   const requireStrings = (fields: string[]) => {
     for (const f of fields) {
-      if (typeof obj[f] !== "string") throw new Error(`Missing or invalid '${f}'`);
+      if (typeof obj[f] !== "string") {
+        throw new Error(`Missing or invalid '${f}'`);
+      }
     }
   };
 
@@ -140,13 +166,20 @@ export function parseMessage(raw: unknown): Message {
       }
       break;
     case "op-resolve": {
-      if (typeof obj.refs !== "object" || obj.refs === null || Array.isArray(obj.refs)) {
+      if (
+        typeof obj.refs !== "object" || obj.refs === null ||
+        Array.isArray(obj.refs)
+      ) {
         throw new Error("Missing or invalid 'refs' (expected object)");
       }
       const refs = obj.refs as Record<string, unknown>;
       for (const [key, val] of Object.entries(refs)) {
-        if (typeof val !== "string") throw new Error(`Invalid ref value for '${key}'`);
-        if (!/^op:\/\//.test(val)) throw new Error(`'${key}' is not an op:// reference: ${val}`);
+        if (typeof val !== "string") {
+          throw new Error(`Invalid ref value for '${key}'`);
+        }
+        if (!/^op:\/\//.test(val)) {
+          throw new Error(`'${key}' is not an op:// reference: ${val}`);
+        }
       }
       if (obj.account !== undefined && typeof obj.account !== "string") {
         throw new Error("Invalid 'account' field");

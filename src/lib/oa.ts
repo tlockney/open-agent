@@ -10,13 +10,18 @@ import type { ErrorObject, Message, OkResponse, Response } from "./messages.ts";
 export const HOME = Deno.env.get("HOME") ?? "";
 export const SOCK = Deno.env.get("OPEN_AGENT_SOCK") ?? "/tmp/open-agent.sock";
 export const TCP_HOST = Deno.env.get("OPEN_AGENT_TCP_HOST") ?? "127.0.0.1";
-export const TCP_PORT = parseInt(Deno.env.get("OPEN_AGENT_TCP_PORT") ?? "19876", 10);
+export const TCP_PORT = parseInt(
+  Deno.env.get("OPEN_AGENT_TCP_PORT") ?? "19876",
+  10,
+);
 // Resolve host identity: env var → identity file → hostname fallback
 function resolveHost(): string {
   const envHost = Deno.env.get("OPEN_AGENT_HOST");
   if (envHost) return envHost;
 
-  const identityPath = `${Deno.env.get("HOME") ?? ""}/.config/open-agent/identity`;
+  const identityPath = `${
+    Deno.env.get("HOME") ?? ""
+  }/.config/open-agent/identity`;
   try {
     return Deno.readTextFileSync(identityPath).trim();
   } catch { /* file doesn't exist */ }
@@ -38,7 +43,8 @@ export function isRemoteSession(): boolean {
   );
 }
 
-export const SCRIPT_NAME = new URL(import.meta.url).pathname.split("/").at(-2) ?? "oa";
+export const SCRIPT_NAME =
+  new URL(import.meta.url).pathname.split("/").at(-2) ?? "oa";
 
 export function fail(msg: string): never {
   console.error(`${callerName()}: ${msg}`);
@@ -49,7 +55,8 @@ export function fail(msg: string): never {
 function callerName(): string {
   try {
     const main = Deno.mainModule;
-    return new URL(main).pathname.split("/").pop()?.replace(/\.ts$/, "") ?? "oa";
+    return new URL(main).pathname.split("/").pop()?.replace(/\.ts$/, "") ??
+      "oa";
   } catch {
     return "oa";
   }
@@ -58,7 +65,9 @@ function callerName(): string {
 export function requireSock(): void {
   if (!existsSync(SOCK)) {
     // Socket missing — TCP may still work, so just warn
-    console.error(`${callerName()}: socket not found at ${SOCK}, will try TCP ${TCP_HOST}:${TCP_PORT}`);
+    console.error(
+      `${callerName()}: socket not found at ${SOCK}, will try TCP ${TCP_HOST}:${TCP_PORT}`,
+    );
   }
 }
 
@@ -74,8 +83,14 @@ function connectWithTimeout(
       ? Deno.connect(opts as Deno.UnixConnectOptions)
       : Deno.connect(opts as Deno.ConnectOptions);
     connect.then(
-      (conn) => { clearTimeout(timer); resolve(conn); },
-      (err) => { clearTimeout(timer); reject(err); },
+      (conn) => {
+        clearTimeout(timer);
+        resolve(conn);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
     );
   });
 }
@@ -96,9 +111,13 @@ async function sendVia(
     const n = await conn.read(buf);
     clearTimeout(timer);
     if (!n) throw new Error("no response from agent");
-    return JSON.parse(new TextDecoder().decode(buf.subarray(0, n)).trim()) as Response;
+    return JSON.parse(
+      new TextDecoder().decode(buf.subarray(0, n)).trim(),
+    ) as Response;
   } finally {
-    try { conn.close(); } catch { /* already closed */ }
+    try {
+      conn.close();
+    } catch { /* already closed */ }
   }
 }
 
@@ -128,7 +147,7 @@ export async function send(
     );
   } catch {
     throw new Error(
-      `failed to connect to agent (tried socket ${SOCK} and TCP ${TCP_HOST}:${TCP_PORT})`
+      `failed to connect to agent (tried socket ${SOCK} and TCP ${TCP_HOST}:${TCP_PORT})`,
     );
   }
 }
@@ -147,7 +166,9 @@ export function formatErrorMessage(err: unknown): string {
   return "unknown error";
 }
 
-export function checkResponse(response: Response): asserts response is OkResponse {
+export function checkResponse(
+  response: Response,
+): asserts response is OkResponse {
   if (response.ok !== true) {
     fail(formatErrorMessage(response.error));
   }

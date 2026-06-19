@@ -56,12 +56,10 @@ async function verifyMountAndPath(
   host: string,
   remoteHome: string,
   remotePath: string,
-):
-  | Promise<
-    | { ok: true; localPath: string; state: MountState }
-    | { ok: false; code: "path_not_found" | "mount_stale"; message: string }
-  >
-{
+): Promise<
+  | { ok: true; localPath: string; state: MountState }
+  | { ok: false; code: "path_not_found" | "mount_stale"; message: string }
+> {
   let state = await deps.mountManager.ensureMount(host, remoteHome);
   let localPath = translatePath(remotePath, state);
 
@@ -122,7 +120,9 @@ export async function handleConnect(
 ): Promise<string> {
   const state = await deps.mountManager.ensureMount(msg.host, msg.remoteHome);
   state.sessions.add(msg.sessionId);
-  deps.log(`Session ${msg.sessionId}@${msg.host} connected (${state.sessions.size} active)`);
+  deps.log(
+    `Session ${msg.sessionId}@${msg.host} connected (${state.sessions.size} active)`,
+  );
   return ok({ mountPoint: state.mountPoint });
 }
 
@@ -133,7 +133,9 @@ export function handleDisconnect(
   const state = deps.mountManager.getMount(msg.host);
   if (state) {
     state.sessions.delete(msg.sessionId);
-    deps.log(`Session ${msg.sessionId}@${msg.host} disconnected (${state.sessions.size} remaining)`);
+    deps.log(
+      `Session ${msg.sessionId}@${msg.host} disconnected (${state.sessions.size} remaining)`,
+    );
     if (state.sessions.size === 0) {
       deps.mountManager.scheduleUnmount(msg.host);
     }
@@ -145,7 +147,12 @@ export async function handleOpen(
   msg: Extract<Message, { action: "open" }>,
   deps: HandlerDeps,
 ): Promise<string> {
-  const verified = await verifyMountAndPath(deps, msg.host, msg.remoteHome, msg.path);
+  const verified = await verifyMountAndPath(
+    deps,
+    msg.host,
+    msg.remoteHome,
+    msg.path,
+  );
   if (!verified.ok) {
     const opts: { host: string; recovery?: string } = { host: msg.host };
     if (verified.code === "mount_stale") opts.recovery = `ra reset ${msg.host}`;
@@ -218,7 +225,10 @@ export async function handleNotify(
 
   const result = await deps.runCommand("terminal-notifier", args);
   if (!result.success) {
-    return err("internal", `notification failed: ${decoder.decode(result.stderr)}`);
+    return err(
+      "internal",
+      `notification failed: ${decoder.decode(result.stderr)}`,
+    );
   }
   deps.log(`Notification: ${msg.title}`);
   return ok();
@@ -229,12 +239,17 @@ export function handleOpenUrl(
   deps: HandlerDeps,
 ): Promise<string> {
   if (!/^https?:\/\//i.test(msg.url)) {
-    return Promise.resolve(err("internal", "Only http/https URLs are supported"));
+    return Promise.resolve(
+      err("internal", "Only http/https URLs are supported"),
+    );
   }
   deps.log(`Opening URL: ${msg.url}`);
   return deps.runCommand("open", [msg.url]).then((result) => {
     if (!result.success) {
-      return err("internal", `open URL failed: ${decoder.decode(result.stderr)}`);
+      return err(
+        "internal",
+        `open URL failed: ${decoder.decode(result.stderr)}`,
+      );
     }
     return ok();
   });
@@ -244,7 +259,12 @@ export async function handlePush(
   msg: Extract<Message, { action: "push" }>,
   deps: HandlerDeps,
 ): Promise<string> {
-  const verified = await verifyMountAndPath(deps, msg.host, msg.remoteHome, msg.path);
+  const verified = await verifyMountAndPath(
+    deps,
+    msg.host,
+    msg.remoteHome,
+    msg.path,
+  );
   if (!verified.ok) {
     const opts: { host: string; recovery?: string } = { host: msg.host };
     if (verified.code === "mount_stale") opts.recovery = `ra reset ${msg.host}`;
@@ -292,10 +312,17 @@ export async function handleOpRead(
   deps: HandlerDeps,
 ): Promise<string> {
   deps.log(`op-read: resolving reference`);
-  const opArgs = [...(msg.account ? ["--account", msg.account] : []), "read", msg.ref];
+  const opArgs = [
+    ...(msg.account ? ["--account", msg.account] : []),
+    "read",
+    msg.ref,
+  ];
   const result = await deps.runCommand("op", opArgs);
   if (!result.success) {
-    return err("internal", `op read failed: ${decoder.decode(result.stderr).trim()}`);
+    return err(
+      "internal",
+      `op read failed: ${decoder.decode(result.stderr).trim()}`,
+    );
   }
   const value = decoder.decode(result.stdout).trim();
   return ok({ value });
@@ -358,7 +385,9 @@ export async function handleDoctor(deps: HandlerDeps): Promise<string> {
     pendingUnmount: boolean;
   }> = {};
   for (const [host, state] of deps.mountManager.getAllMounts()) {
-    const responsive = await deps.mountManager.isMountResponsive(state.mountPoint);
+    const responsive = await deps.mountManager.isMountResponsive(
+      state.mountPoint,
+    );
     mounts[host] = {
       mountPoint: state.mountPoint,
       remoteHome: state.remoteHome,
@@ -389,7 +418,9 @@ export async function handleReset(
       reset.push(host);
     }
   }
-  deps.log(`Reset: ${reset.length === 0 ? "(no mounts to reset)" : reset.join(", ")}`);
+  deps.log(
+    `Reset: ${reset.length === 0 ? "(no mounts to reset)" : reset.join(", ")}`,
+  );
   return ok({ reset });
 }
 
@@ -411,23 +442,42 @@ export function handleStatus(deps: HandlerDeps): string {
 
 // --- Dispatcher ---
 
-export async function handleMessage(msg: Message, deps: HandlerDeps): Promise<string> {
+export async function handleMessage(
+  msg: Message,
+  deps: HandlerDeps,
+): Promise<string> {
   switch (msg.action) {
-    case "connect": return handleConnect(msg, deps);
-    case "disconnect": return handleDisconnect(msg, deps);
-    case "open": return handleOpen(msg, deps);
-    case "open-vscode": return handleOpenVscode(msg, deps);
-    case "copy": return handleCopy(msg, deps);
-    case "paste": return handlePaste(deps);
-    case "notify": return handleNotify(msg, deps);
-    case "open-url": return handleOpenUrl(msg, deps);
-    case "push": return handlePush(msg, deps);
-    case "pull": return handlePull(msg, deps);
-    case "op-read": return handleOpRead(msg, deps);
-    case "op-resolve": return handleOpResolve(msg, deps);
-    case "status": return handleStatus(deps);
-    case "ping": return handlePing(deps);
-    case "reset": return handleReset(msg, deps);
-    case "doctor": return handleDoctor(deps);
+    case "connect":
+      return handleConnect(msg, deps);
+    case "disconnect":
+      return handleDisconnect(msg, deps);
+    case "open":
+      return handleOpen(msg, deps);
+    case "open-vscode":
+      return handleOpenVscode(msg, deps);
+    case "copy":
+      return handleCopy(msg, deps);
+    case "paste":
+      return handlePaste(deps);
+    case "notify":
+      return handleNotify(msg, deps);
+    case "open-url":
+      return handleOpenUrl(msg, deps);
+    case "push":
+      return handlePush(msg, deps);
+    case "pull":
+      return handlePull(msg, deps);
+    case "op-read":
+      return handleOpRead(msg, deps);
+    case "op-resolve":
+      return handleOpResolve(msg, deps);
+    case "status":
+      return handleStatus(deps);
+    case "ping":
+      return handlePing(deps);
+    case "reset":
+      return handleReset(msg, deps);
+    case "doctor":
+      return handleDoctor(deps);
   }
 }

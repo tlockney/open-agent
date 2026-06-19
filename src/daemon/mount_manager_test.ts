@@ -1,5 +1,5 @@
-import { assertEquals, assertRejects } from "jsr:@std/assert";
-import { MountManager, type MountDeps } from "./mount_manager.ts";
+import { assertEquals, assertRejects } from "jsr:@std/assert@1";
+import { type MountDeps, MountManager } from "./mount_manager.ts";
 
 const encoder = new TextEncoder();
 
@@ -16,7 +16,12 @@ function createFakeDeps(opts?: {
   sshfsSuccess?: boolean;
   sshfsStderr?: string;
   umountSuccess?: boolean;
-}): { deps: MountDeps; calls: CommandCall[]; logs: string[]; timers: Map<number, () => void> } {
+}): {
+  deps: MountDeps;
+  calls: CommandCall[];
+  logs: string[];
+  timers: Map<number, () => void>;
+} {
   const calls: CommandCall[] = [];
   const logs: string[] = [];
   const timers = new Map<number, () => void>();
@@ -54,18 +59,30 @@ function createFakeDeps(opts?: {
         };
       }
       if (cmd === "diskutil") {
-        return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
+        return {
+          success: true,
+          stdout: new Uint8Array(),
+          stderr: new Uint8Array(),
+        };
       }
-      return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
+      return {
+        success: true,
+        stdout: new Uint8Array(),
+        stderr: new Uint8Array(),
+      };
     },
-    async mkdir(_path, _opts) { /* no-op */ },
-    log(msg) { logs.push(msg); },
+    async mkdir(_path, _opts) {/* no-op */},
+    log(msg) {
+      logs.push(msg);
+    },
     setTimeout(fn, _ms) {
       const id = nextTimerId++;
       timers.set(id, fn);
       return id;
     },
-    clearTimeout(id) { timers.delete(id); },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
   };
 
   return { deps, calls, logs, timers };
@@ -113,17 +130,31 @@ Deno.test("ensureMount: remounts when existing mount is stale", async () => {
     async runCommand(cmd, args) {
       calls.push({ cmd, args });
       if (cmd === "mount") {
-        return { success: true, stdout: encoder.encode(mountOutput), stderr: new Uint8Array() };
+        return {
+          success: true,
+          stdout: encoder.encode(mountOutput),
+          stderr: new Uint8Array(),
+        };
       }
       if (cmd === "sshfs") {
-        return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
+        return {
+          success: true,
+          stdout: new Uint8Array(),
+          stderr: new Uint8Array(),
+        };
       }
       // umount, diskutil, stat
-      return { success: cmd === "umount", stdout: new Uint8Array(), stderr: new Uint8Array() };
+      return {
+        success: cmd === "umount",
+        stdout: new Uint8Array(),
+        stderr: new Uint8Array(),
+      };
     },
     async mkdir() {},
     log() {},
-    setTimeout(fn, _ms) { return 0; },
+    setTimeout(_fn, _ms) {
+      return 0;
+    },
     clearTimeout() {},
   };
 
@@ -155,16 +186,30 @@ Deno.test("ensureMount: concurrent calls are serialized", async () => {
         // Simulate async work
         await new Promise((r) => setTimeout(r, 10));
         concurrentSshfs--;
-        return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
+        return {
+          success: true,
+          stdout: new Uint8Array(),
+          stderr: new Uint8Array(),
+        };
       }
       if (cmd === "mount") {
-        return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
+        return {
+          success: true,
+          stdout: new Uint8Array(),
+          stderr: new Uint8Array(),
+        };
       }
-      return { success: true, stdout: new Uint8Array(), stderr: new Uint8Array() };
+      return {
+        success: true,
+        stdout: new Uint8Array(),
+        stderr: new Uint8Array(),
+      };
     },
     async mkdir() {},
     log() {},
-    setTimeout(fn, _ms) { return 0; },
+    setTimeout(_fn, _ms) {
+      return 0;
+    },
     clearTimeout() {},
   };
 
@@ -183,7 +228,10 @@ Deno.test("ensureMount: concurrent calls are serialized", async () => {
 });
 
 Deno.test("ensureMount: sshfs failure throws", async () => {
-  const { deps } = createFakeDeps({ sshfsSuccess: false, sshfsStderr: "connection refused" });
+  const { deps } = createFakeDeps({
+    sshfsSuccess: false,
+    sshfsStderr: "connection refused",
+  });
   const mgr = new MountManager(deps, "/mnt", 30000);
 
   await assertRejects(
@@ -194,7 +242,10 @@ Deno.test("ensureMount: sshfs failure throws", async () => {
 });
 
 Deno.test("scheduleUnmount: fires after timer and unmounts", async () => {
-  const { deps, calls, timers } = createFakeDeps({ sshfsSuccess: true, umountSuccess: true });
+  const { deps, calls, timers } = createFakeDeps({
+    sshfsSuccess: true,
+    umountSuccess: true,
+  });
   const mgr = new MountManager(deps, "/mnt", 30000);
 
   const state = await mgr.ensureMount("h1", "/home/user");
@@ -235,7 +286,10 @@ Deno.test("scheduleUnmount: cancelled when new session connects", async () => {
 });
 
 Deno.test("forceUnmount: falls back to diskutil when umount fails", async () => {
-  const { deps, calls } = createFakeDeps({ sshfsSuccess: true, umountSuccess: false });
+  const { deps, calls } = createFakeDeps({
+    sshfsSuccess: true,
+    umountSuccess: false,
+  });
   const mgr = new MountManager(deps, "/mnt", 30000);
 
   await mgr.ensureMount("h1", "/home/user");
@@ -249,7 +303,10 @@ Deno.test("forceUnmount: falls back to diskutil when umount fails", async () => 
 });
 
 Deno.test("unmountAll: unmounts all hosts", async () => {
-  const { deps, calls } = createFakeDeps({ sshfsSuccess: true, umountSuccess: true });
+  const { deps, calls } = createFakeDeps({
+    sshfsSuccess: true,
+    umountSuccess: true,
+  });
   const mgr = new MountManager(deps, "/mnt", 30000);
 
   await mgr.ensureMount("h1", "/home/user1");
@@ -278,14 +335,20 @@ Deno.test("isMountResponsive: false when not mounted", async () => {
 });
 
 Deno.test("isMountResponsive: false when stat fails", async () => {
-  const { deps } = createFakeDeps({ mountOutput: "/mnt/h1", statSuccess: false });
+  const { deps } = createFakeDeps({
+    mountOutput: "/mnt/h1",
+    statSuccess: false,
+  });
   const mgr = new MountManager(deps, "/mnt", 30000);
 
   assertEquals(await mgr.isMountResponsive("/mnt/h1"), false);
 });
 
 Deno.test("isMountResponsive: true when mounted and stat succeeds", async () => {
-  const { deps } = createFakeDeps({ mountOutput: "/mnt/h1", statSuccess: true });
+  const { deps } = createFakeDeps({
+    mountOutput: "/mnt/h1",
+    statSuccess: true,
+  });
   const mgr = new MountManager(deps, "/mnt", 30000);
 
   assertEquals(await mgr.isMountResponsive("/mnt/h1"), true);

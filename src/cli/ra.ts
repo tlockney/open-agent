@@ -90,7 +90,9 @@ async function runStatus(): Promise<void> {
   const mounts = (response.mounts as Record<string, unknown> | undefined) ?? {};
   const count = Object.keys(mounts).length;
   console.log(
-    `OK · open-agent v${version} · ${count} ${count === 1 ? "mount" : "mounts"}`,
+    `OK · open-agent v${version} · ${count} ${
+      count === 1 ? "mount" : "mounts"
+    }`,
   );
 }
 
@@ -105,7 +107,8 @@ interface MountInfo {
 async function runMounts(): Promise<void> {
   const response = await sendOrFail({ action: "status" });
   if (!response.ok) fail(formatErrorMessage(response.error));
-  const mounts = (response.mounts as Record<string, MountInfo> | undefined) ?? {};
+  const mounts = (response.mounts as Record<string, MountInfo> | undefined) ??
+    {};
   const entries = Object.entries(mounts).sort(([a], [b]) => a.localeCompare(b));
 
   if (entries.length === 0) {
@@ -115,14 +118,21 @@ async function runMounts(): Promise<void> {
 
   const hostWidth = Math.max(4, ...entries.map(([h]) => h.length));
   const mpWidth = Math.max(11, ...entries.map(([, m]) => m.mountPoint.length));
-  const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - s.length));
+  const pad = (s: string, n: number) =>
+    s + " ".repeat(Math.max(0, n - s.length));
 
-  console.log(`${pad("HOST", hostWidth)}  ${pad("MOUNT POINT", mpWidth)}  SESSIONS  PENDING UNMOUNT`);
+  console.log(
+    `${pad("HOST", hostWidth)}  ${
+      pad("MOUNT POINT", mpWidth)
+    }  SESSIONS  PENDING UNMOUNT`,
+  );
   for (const [host, info] of entries) {
     const sessions = String(info.activeSessions);
     const pending = info.pendingUnmount ? "yes" : "no";
     console.log(
-      `${pad(host, hostWidth)}  ${pad(info.mountPoint, mpWidth)}  ${pad(sessions, 8)}  ${pending}`,
+      `${pad(host, hostWidth)}  ${pad(info.mountPoint, mpWidth)}  ${
+        pad(sessions, 8)
+      }  ${pending}`,
     );
   }
 }
@@ -134,7 +144,9 @@ async function runReset(host?: string): Promise<void> {
   if (!response.ok) fail(formatErrorMessage(response.error));
   const reset = (response.reset as string[] | undefined) ?? [];
   if (reset.length === 0) {
-    console.log(host ? `No active mount for ${host}.` : "No active mounts to reset.");
+    console.log(
+      host ? `No active mount for ${host}.` : "No active mounts to reset.",
+    );
   } else {
     console.log(`Reset ${reset.length} mount(s): ${reset.join(", ")}`);
   }
@@ -154,7 +166,9 @@ async function runDoctor(): Promise<void> {
 
   // Client-side transport info — visible regardless of daemon state.
   console.log("Transport:");
-  console.log(`  socket:   ${SOCK} ${existsSync(SOCK) ? "(present)" : "(missing)"}`);
+  console.log(
+    `  socket:   ${SOCK} ${existsSync(SOCK) ? "(present)" : "(missing)"}`,
+  );
   console.log(`  tcp:      ${TCP_HOST}:${TCP_PORT}`);
   console.log(`  host id:  ${HOST}`);
   console.log("");
@@ -182,7 +196,9 @@ async function runDoctor(): Promise<void> {
   } else {
     console.log(`Daemon: ✗ unreachable — ${pingDetail}`);
     console.log("");
-    console.log("→ Reconnect SSH (if remote) or check the daemon launchd service.");
+    console.log(
+      "→ Reconnect SSH (if remote) or check the daemon launchd service.",
+    );
     Deno.exit(1);
   }
 
@@ -196,12 +212,15 @@ async function runDoctor(): Promise<void> {
     Deno.exit(1);
   }
   if (!docResp.ok) {
-    console.log(`Mounts: ✗ probe failed — ${formatErrorMessage(docResp.error)}`);
+    console.log(
+      `Mounts: ✗ probe failed — ${formatErrorMessage(docResp.error)}`,
+    );
     Deno.exit(1);
   }
 
-  const mounts = (docResp.mounts as Record<string, DoctorMountInfo> | undefined) ??
-    {};
+  const mounts =
+    (docResp.mounts as Record<string, DoctorMountInfo> | undefined) ??
+      {};
   const entries = Object.entries(mounts).sort(([a], [b]) => a.localeCompare(b));
 
   if (entries.length === 0) {

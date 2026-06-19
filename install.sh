@@ -113,7 +113,7 @@ if [[ -f "$AGENT_DIR/open-agent-daemon.ts" ]]; then
     info "Removed old $AGENT_DIR/open-agent-daemon.ts"
 fi
 if [[ -d "$BIN_DIR/lib" ]]; then
-    rm -rf "$BIN_DIR/lib"
+    rm -rf "${BIN_DIR:?}/lib"
     info "Removed old $BIN_DIR/lib/"
 fi
 

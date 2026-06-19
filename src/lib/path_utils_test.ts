@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from "jsr:@std/assert";
+import { assertEquals, assertThrows } from "jsr:@std/assert@1";
 import { translatePath } from "./path_utils.ts";
 
 const mount = { remoteHome: "/home/user", mountPoint: "/mnt/host" };
