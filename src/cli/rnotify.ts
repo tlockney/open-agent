@@ -4,8 +4,7 @@
 //        rnotify "CI" "All tests passed"
 //        rnotify -s "Ping" "Title" "Message"
 
-import { parseArgs } from "jsr:@std/cli@1/parse-args";
-import type { Message } from "../lib/messages.ts";
+import { CliError, parseRnotifyArgs } from "./args.ts";
 import { checkResponse, fail, requireSock, send } from "../lib/oa.ts";
 
 const USAGE = `Usage: rnotify [options] <title> [message]
@@ -21,28 +20,20 @@ Examples:
   rnotify -s Ping "Deploy" "Production deploy finished"
   rnotify -u "myproject" "Tests" "Suite passed in 3m12s"`;
 
-const args = parseArgs(Deno.args, {
-  string: ["s", "u"],
-  boolean: ["h"],
-});
+let parsed: ReturnType<typeof parseRnotifyArgs>;
+try {
+  parsed = parseRnotifyArgs(Deno.args);
+} catch (e) {
+  if (e instanceof CliError) fail(e.message);
+  throw e;
+}
 
-if (args.h) {
+if (parsed.kind === "help") {
   console.log(USAGE);
   Deno.exit(0);
 }
 
-const positional = args._ as string[];
-if (positional.length === 0) fail("title required. See rnotify -h");
-
 requireSock();
 
-const msg: Message = {
-  action: "notify",
-  title: String(positional[0]),
-  ...(positional[1] !== undefined && { message: String(positional[1]) }),
-  ...(args.u && { subtitle: args.u }),
-  ...(args.s && { sound: args.s }),
-};
-
-const response = await send(msg);
+const response = await send(parsed.message);
 checkResponse(response);

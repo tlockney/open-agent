@@ -3,8 +3,7 @@
 // Usage: rpush file.txt              # copies to local ~/Downloads
 //        rpush -d ~/Desktop file.txt # copies to specific local directory
 
-import { parseArgs } from "jsr:@std/cli@1/parse-args";
-import type { Message } from "../lib/messages.ts";
+import { buildPushMessage, CliError, parseRpushArgs } from "./args.ts";
 import {
   checkResponse,
   fail,
@@ -27,22 +26,22 @@ Examples:
   rpush build.tar.gz              # → local ~/Downloads/build.tar.gz
   rpush -d ~/Desktop report.pdf   # → local ~/Desktop/report.pdf`;
 
-const args = parseArgs(Deno.args, {
-  string: ["d"],
-  boolean: ["h"],
-});
+let parsed: ReturnType<typeof parseRpushArgs>;
+try {
+  parsed = parseRpushArgs(Deno.args);
+} catch (e) {
+  if (e instanceof CliError) fail(e.message);
+  throw e;
+}
 
-if (args.h) {
+if (parsed.kind === "help") {
   console.log(USAGE);
   Deno.exit(0);
 }
 
-const positional = args._ as string[];
-if (positional.length === 0) fail("file required. See rpush -h");
-
 requireSock();
 
-let target = String(positional[0]);
+let target = parsed.file;
 
 // Verify file exists and resolve to absolute path
 try {
@@ -53,13 +52,12 @@ try {
 }
 target = Deno.realPathSync(target);
 
-const msg: Message = {
-  action: "push",
-  host: HOST,
-  remoteHome: HOME,
+const msg = buildPushMessage({
   path: target,
-  ...(args.d && { dest: args.d }),
-};
+  dest: parsed.dest,
+  host: HOST,
+  home: HOME,
+});
 
 const response = await send(msg, 30);
 checkResponse(response);

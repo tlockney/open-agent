@@ -18,14 +18,14 @@
 import { blue, green, red, yellow } from "jsr:@std/fmt@1/colors";
 import { basename } from "jsr:@std/path@1/basename";
 import { existsSync } from "jsr:@std/fs@1/exists";
-import { parseArgs as denoParseArgs } from "jsr:@std/cli@1/parse-args";
 import {
   buildFzfEntries,
   type HostEntry,
+  type Opts,
+  parseArgs,
   type ProjectEntry,
   type ProjectMatch,
   shellQuote,
-  splitHostQualifier,
   TERMINAL_RESTORE_SEQUENCE,
 } from "../lib/rproj_utils.ts";
 import { formatErrorMessage } from "../lib/oa.ts";
@@ -44,26 +44,6 @@ const LEGACY_CONFIG_DIR = `${XDG_CONFIG}/rproj`;
 const AGENT_SOCK = `${HOME}/.local/share/open-agent/open-agent.sock`;
 const SCRIPT_NAME = "rproj";
 const SSH_TIMEOUT_MS = 5_000;
-
-// --- Types ---
-
-interface Opts {
-  hostFilter: string | null;
-  projectName: string | null;
-}
-
-type Command =
-  | { cmd: "list"; opts: Opts; json: boolean; query: string }
-  | { cmd: "tmux"; opts: Opts }
-  | { cmd: "code"; opts: Opts }
-  | { cmd: "finder"; opts: Opts }
-  | { cmd: "default"; opts: Opts }
-  | { cmd: "status" }
-  | { cmd: "help" }
-  | { cmd: "setup"; opts: Opts }
-  | { cmd: "open"; arg: string }
-  | { cmd: "preview"; host: string; dir: string; item: string }
-  | { cmd: "preview_multi"; meta: string };
 
 // --- Logging (suppressed in JSON mode) ---
 
@@ -910,123 +890,11 @@ Examples:
     ${SCRIPT_NAME} s                       # Check open-agent status`);
 }
 
-// --- Argument Parsing ---
-
-function parseArgs(args: string[]): Command {
-  if (args.length === 0) {
-    return { cmd: "default", opts: { hostFilter: null, projectName: null } };
-  }
-  // Handle bare --debug with no subcommand
-  if (args.length === 1 && args[0] === "--debug") {
-    debugMode = true;
-    return { cmd: "default", opts: { hostFilter: null, projectName: null } };
-  }
-
-  const first = args[0];
-
-  // Internal preview commands (called by fzf)
-  if (first === "_preview_multi") {
-    return { cmd: "preview_multi", meta: args[1] ?? "" };
-  }
-  if (first === "_preview") {
-    return {
-      cmd: "preview",
-      host: args[1] ?? "",
-      dir: args[2] ?? "",
-      item: args[3] ?? "",
-    };
-  }
-
-  // Map short aliases
-  const cmdMap: Record<string, string> = {
-    l: "list",
-    t: "tmux",
-    c: "code",
-    f: "finder",
-    s: "status",
-    o: "open",
-  };
-  const cmdName = cmdMap[first] ?? first;
-
-  if (cmdName === "help" || cmdName === "--help") return { cmd: "help" };
-  if (cmdName === "status") return { cmd: "status" };
-  if (cmdName === "open") {
-    return {
-      cmd: "open",
-      arg: args[1] ?? error("Usage: rproj open 'host|path'"),
-    };
-  }
-
-  // Parse flags from remaining args
-  const parsed = denoParseArgs(args.slice(1), {
-    string: ["host", "p", "q"],
-    boolean: ["json", "help", "debug"],
-    alias: { h: "host" },
-    unknown: (opt) => {
-      if (opt.startsWith("-")) error(`Unknown option: ${opt}`);
-      return true;
-    },
-  });
-
-  if (parsed.debug) debugMode = true;
-
-  if (parsed.help) return { cmd: "help" };
-
-  const flagHost = (parsed.host as string | undefined) ?? null;
-  const rawProject = (parsed.p as string | undefined) ??
-    (parsed._[0] as string | undefined) ?? null;
-
-  // A project token may carry a `host:` prefix (e.g. `m4mini:personal`).
-  // Resolve it against the `-h` flag: the prefix sets the host filter, but
-  // disagreeing with an explicit `-h` is a mistake worth flagging.
-  let hostFilter = flagHost;
-  let projectName = rawProject;
-  if (rawProject !== null) {
-    let split: { host: string | null; name: string };
-    try {
-      split = splitHostQualifier(rawProject);
-    } catch (e) {
-      error(e instanceof Error ? e.message : String(e));
-    }
-    if (split.host !== null) {
-      if (flagHost !== null && flagHost !== split.host) {
-        error(`host given twice (-h ${flagHost} vs ${split.host}:)`);
-      }
-      hostFilter = split.host;
-    }
-    projectName = split.name === "" ? null : split.name;
-  }
-
-  const opts: Opts = { hostFilter, projectName };
-
-  switch (cmdName) {
-    case "list":
-      return {
-        cmd: "list",
-        opts,
-        json: !!parsed.json,
-        query: (parsed.q as string | undefined) ?? "",
-      };
-    case "tmux":
-      return { cmd: "tmux", opts };
-    case "code":
-      return { cmd: "code", opts };
-    case "finder":
-      return { cmd: "finder", opts };
-    case "setup":
-      return { cmd: "setup", opts };
-    default:
-      if (first.startsWith("-")) {
-        return parseArgs(["default", ...args]);
-      }
-      error(`Unknown command: ${first}. Use '${SCRIPT_NAME} help' for usage.`);
-  }
-}
-
 // --- Main ---
 
 async function main(): Promise<void> {
-  const command = parseArgs([...Deno.args]);
+  const { command, debug } = parseArgs([...Deno.args]);
+  if (debug) debugMode = true;
 
   // Set JSON mode globally for logging
   if (command.cmd === "list" && command.json) {

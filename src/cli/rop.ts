@@ -5,6 +5,13 @@
 //        rop run -- command args...
 
 import {
+  CliError,
+  extractAccount,
+  parseEnvLine,
+  parseReadRef,
+  splitRunArgs,
+} from "./args.ts";
+import {
   checkResponse,
   fail,
   getStringField,
@@ -38,15 +45,14 @@ if (Deno.args.length === 0) {
 
 // Parse global options (can appear anywhere before or after subcommand)
 let account: string | undefined;
-const filtered: string[] = [];
-for (let i = 0; i < Deno.args.length; i++) {
-  if (Deno.args[i] === "--account") {
-    i++;
-    if (i >= Deno.args.length) fail("--account requires a value");
-    account = Deno.args[i];
-  } else {
-    filtered.push(Deno.args[i]);
-  }
+let filtered: string[];
+try {
+  const globals = extractAccount(Deno.args);
+  account = globals.account;
+  filtered = globals.rest;
+} catch (e) {
+  if (e instanceof CliError) fail(e.message);
+  throw e;
 }
 
 const subcmd = filtered[0];
@@ -89,9 +95,13 @@ switch (subcmd) {
 // --- Subcommand: read ---
 
 async function cmdRead(args: string[]): Promise<void> {
-  if (args.length === 0) fail("read requires an op:// reference");
-  const ref = args[0];
-  if (!ref.startsWith("op://")) fail("reference must start with op://");
+  let ref: string;
+  try {
+    ref = parseReadRef(args);
+  } catch (e) {
+    if (e instanceof CliError) fail(e.message);
+    throw e;
+  }
 
   const response = await send({
     action: "op-read",
@@ -106,29 +116,14 @@ async function cmdRead(args: string[]): Promise<void> {
 // --- Subcommand: run ---
 
 async function cmdRun(args: string[]): Promise<void> {
-  const envFiles: string[] = [];
-  let cmdArgs: string[] = [];
-  let foundSeparator = false;
-
-  // Parse arguments
-  let i = 0;
-  while (i < args.length) {
-    if (args[i] === "--env-file") {
-      i++;
-      if (i >= args.length) fail("--env-file requires a filename");
-      envFiles.push(args[i]);
-    } else if (args[i] === "--") {
-      foundSeparator = true;
-      cmdArgs = args.slice(i + 1);
-      break;
-    } else {
-      fail(`unexpected argument before --: ${args[i]}`);
-    }
-    i++;
+  let envFiles: string[];
+  let cmdArgs: string[];
+  try {
+    ({ envFiles, cmdArgs } = splitRunArgs(args));
+  } catch (e) {
+    if (e instanceof CliError) fail(e.message);
+    throw e;
   }
-
-  if (!foundSeparator) fail("missing -- separator before command");
-  if (cmdArgs.length === 0) fail("no command specified after --");
 
   // Collect op:// references from env files
   const refs: Record<string, string> = {};
@@ -142,17 +137,12 @@ async function cmdRun(args: string[]): Promise<void> {
       fail(`env file not found: ${file}`);
     }
     for (const line of text.split("\n")) {
-      if (!line.trim() || line.trim().startsWith("#")) continue;
-      const match = line.match(/^([A-Za-z_]\w*)=\s*(.*)/);
-      if (!match) continue;
-      const key = match[1];
-      let val = match[2];
-      // Strip surrounding quotes
-      val = val.replace(/^["']|["']$/g, "");
-      if (val.startsWith("op://")) {
-        refs[key] = val;
+      const parsed = parseEnvLine(line);
+      if (!parsed) continue;
+      if (parsed.isRef) {
+        refs[parsed.key] = parsed.value;
       } else {
-        envVars[key] = val;
+        envVars[parsed.key] = parsed.value;
       }
     }
   }
