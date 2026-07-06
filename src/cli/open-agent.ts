@@ -206,6 +206,16 @@ async function cmdSetupRemote(target: string): Promise<void> {
     }
   }
 
+  // Shared CLI modules the remote scripts import (not commands themselves,
+  // so they must not appear in remoteScripts / the wrapper symlink list)
+  const sharedCliModules = ["args"];
+  for (const mod of sharedCliModules) {
+    await Deno.copyFile(
+      `${SCRIPT_DIR}/${mod}.ts`,
+      `${tmpDir}/src/cli/${mod}.ts`,
+    );
+  }
+
   await Deno.copyFile(hookPath, `${tmpDir}/open-agent-hook.sh`);
   await Deno.copyFile(wrapperPath, `${tmpDir}/oa-wrapper.sh`);
 
