@@ -262,7 +262,7 @@ deno task check
 
 # Run daemon directly (for development)
 deno run --allow-read --allow-write --allow-run --allow-env \
-  --allow-net=unix,127.0.0.1:19876 src/daemon/main.ts
+  --allow-net src/daemon/main.ts
 ```
 
 ## Limitations
@@ -279,6 +279,8 @@ deno run --allow-read --allow-write --allow-run --allow-env \
 **Mount failures:** Verify sshfs works manually: `sshfs workmbp:~ /tmp/test-mount`. Check that macFUSE kernel extension is loaded.
 
 **Agent not running:** `launchctl list | grep open-agent`. Check logs: `cat ~/.local/share/open-agent/launchd-stderr.log`.
+
+**Daemon crash-loops with `NotCapable: Requires net access to "unix:..."`:** Deno 2.9 moved Unix sockets from `--allow-read`/`--allow-write` under `--allow-net`, with a `unix:<absolute-path>` grant syntax (the old bare `unix` token no longer matches). Re-run `install.sh` to regenerate the launchd plist with the correct grant.
 
 **sshfs not found by agent:** The launchd plist needs `/opt/homebrew/bin` in its PATH environment variable. Re-run `install.sh` or edit the plist manually.
 

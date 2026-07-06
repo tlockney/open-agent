@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net=unix,127.0.0.1:19876
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net
 
 // open-agent-daemon: local daemon that receives open requests from remote
 // machines via a forwarded Unix socket, manages SSHFS mounts, and opens
@@ -133,14 +133,22 @@ async function main(): Promise<void> {
   const unixListener = Deno.listen({ transport: "unix", path: SOCKET_PATH });
   log(`open-agent listening on ${SOCKET_PATH}`);
 
-  const tcpListener = Deno.listen({ hostname: TCP_HOST, port: TCP_PORT });
-  log(`open-agent listening on ${TCP_HOST}:${TCP_PORT}`);
+  // TCP is a fallback transport; the port may legitimately be held by an
+  // sshd RemoteForward when this machine is also an open-agent remote, so
+  // a failed bind must not take down the Unix listener.
+  let tcpListener: Deno.Listener | null = null;
+  try {
+    tcpListener = Deno.listen({ hostname: TCP_HOST, port: TCP_PORT });
+    log(`open-agent listening on ${TCP_HOST}:${TCP_PORT}`);
+  } catch (e) {
+    log(`TCP fallback unavailable on ${TCP_HOST}:${TCP_PORT}: ${e}`);
+  }
 
   // Graceful shutdown
   const shutdown = async () => {
     log("Shutting down...");
     unixListener.close();
-    tcpListener.close();
+    tcpListener?.close();
     try {
       await Deno.remove(SOCKET_PATH);
     } catch { /* */ }
@@ -152,10 +160,9 @@ async function main(): Promise<void> {
   Deno.addSignalListener("SIGINT", shutdown);
   Deno.addSignalListener("SIGTERM", shutdown);
 
-  await Promise.all([
-    acceptConnections(unixListener),
-    acceptConnections(tcpListener),
-  ]);
+  const accepts = [acceptConnections(unixListener)];
+  if (tcpListener) accepts.push(acceptConnections(tcpListener));
+  await Promise.all(accepts);
 }
 
 main();
