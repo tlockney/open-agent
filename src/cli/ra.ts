@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net=127.0.0.1:19876
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net
 // ra — open-agent admin and diagnostic CLI
 //
 // Operates on the running open-agent daemon over the same Unix socket /

@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net=127.0.0.1:19876
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net
 // ropen - remote open wrapper
 // Sends open/vscode requests to the local open-agent via Unix socket or TCP.
 // Surfaces a structured error (and recovery hint) when the agent is

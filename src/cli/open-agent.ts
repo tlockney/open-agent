@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net
 
 // open-agent — CLI for managing the open-agent remote development toolkit
 //

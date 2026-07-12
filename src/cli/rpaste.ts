@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net=127.0.0.1:19876
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net
 // rpaste - paste from the local machine's clipboard via open-agent
 // Usage: rpaste
 //        rpaste | vim -
