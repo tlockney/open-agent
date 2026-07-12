@@ -282,6 +282,8 @@ deno run --allow-read --allow-write --allow-run --allow-env \
 
 **Daemon crash-loops with `NotCapable: Requires net access to "unix:..."`:** Deno 2.9 moved Unix sockets from `--allow-read`/`--allow-write` under `--allow-net`, with a `unix:<absolute-path>` grant syntax (the old bare `unix` token no longer matches). Re-run `install.sh` to regenerate the launchd plist with the correct grant.
 
+**Remote `r*` command prompts `Deno requests net access to "unix:/tmp/open-agent.sock"`:** The remote is running a pre-Deno-2.9 permission grant that only covers the TCP fallback. Redeploy the current wrapper and scripts with `open-agent setup-remote <host>` (or `all`) from the local Mac, then reconnect.
+
 **sshfs not found by agent:** The launchd plist needs `/opt/homebrew/bin` in its PATH environment variable. Re-run `install.sh` or edit the plist manually.
 
 **Stale SSHFS mount:** `umount -f ~/.remote-mounts/workmbp` or `diskutil unmount force ~/.remote-mounts/workmbp`.
