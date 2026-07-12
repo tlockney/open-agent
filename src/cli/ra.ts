@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net=127.0.0.1:19876
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net
 // ra — open-agent admin and diagnostic CLI
 //
 // Operates on the running open-agent daemon over the same Unix socket /
@@ -69,7 +69,8 @@ async function sendOrFail(msg: Message, timeoutSec = 5): Promise<Response> {
     const detail = e instanceof Error ? e.message : String(e);
     fail(
       `agent unreachable: ${detail}\n` +
-        `  → SSH tunnel may have died. Reconnect SSH, or check the daemon is running locally.`,
+        `  → Is the daemon up on the local Mac ('launchctl list | grep open-agent')?\n` +
+        `    If so, the SSH tunnel may have died — reconnect SSH.`,
     );
   }
 }

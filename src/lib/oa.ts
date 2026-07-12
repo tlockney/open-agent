@@ -8,7 +8,27 @@ import { existsSync } from "jsr:@std/fs@1/exists";
 import type { ErrorObject, Message, OkResponse, Response } from "./messages.ts";
 
 export const HOME = Deno.env.get("HOME") ?? "";
-export const SOCK = Deno.env.get("OPEN_AGENT_SOCK") ?? "/tmp/open-agent.sock";
+
+/** Where sshd's RemoteForward lands the tunnelled socket on a remote host. */
+export const FORWARDED_SOCK = "/tmp/open-agent.sock";
+
+/**
+ * The socket to talk to the daemon on.
+ *
+ * On a remote we reach the daemon only through the SSH tunnel, which binds
+ * FORWARDED_SOCK. Locally the daemon binds its own socket under ~/.local/share
+ * and never listens on /tmp — a /tmp socket on the local Mac is at best a
+ * leftover from an inbound forward, so connecting to it fails even though the
+ * file exists.
+ */
+export function defaultSockPath(home: string, remote: boolean): string {
+  return remote
+    ? FORWARDED_SOCK
+    : `${home}/.local/share/open-agent/open-agent.sock`;
+}
+
+export const SOCK = Deno.env.get("OPEN_AGENT_SOCK") ??
+  defaultSockPath(HOME, isRemoteSession());
 export const TCP_HOST = Deno.env.get("OPEN_AGENT_TCP_HOST") ?? "127.0.0.1";
 export const TCP_PORT = parseInt(
   Deno.env.get("OPEN_AGENT_TCP_PORT") ?? "19876",
@@ -121,10 +141,19 @@ async function sendVia(
   }
 }
 
+function describe(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 export async function send(
   message: Message,
   timeoutSec = 10,
 ): Promise<Response> {
+  // Each transport reports why it failed. Collapsing them into one generic
+  // message hid the real causes — a dead daemon, a missing Deno permission —
+  // behind a blanket "the SSH tunnel died" guess.
+  const failures: string[] = [];
+
   // Try Unix socket first. If the socket exists but the tunnel is dead
   // (common with SSH-forwarded sockets after a disconnect), the send will
   // time out and we fall through to TCP — no separate probe needed.
@@ -135,7 +164,11 @@ export async function send(
         message,
         timeoutSec,
       );
-    } catch { /* fall through to TCP */ }
+    } catch (e) {
+      failures.push(`socket ${SOCK}: ${describe(e)}`);
+    }
+  } else {
+    failures.push(`socket ${SOCK}: not found`);
   }
 
   // Fall back to TCP
@@ -145,9 +178,12 @@ export async function send(
       message,
       timeoutSec,
     );
-  } catch {
+  } catch (e) {
+    failures.push(`TCP ${TCP_HOST}:${TCP_PORT}: ${describe(e)}`);
     throw new Error(
-      `failed to connect to agent (tried socket ${SOCK} and TCP ${TCP_HOST}:${TCP_PORT})`,
+      `failed to connect to agent\n${
+        failures.map((f) => `     - ${f}`).join("\n")
+      }`,
     );
   }
 }

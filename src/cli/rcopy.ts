@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net=127.0.0.1:19876
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run --allow-env --allow-net
 // rcopy - copy stdin to the local machine's clipboard via open-agent
 // Usage: echo "text" | rcopy
 //        cat file.txt | rcopy

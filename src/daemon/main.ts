@@ -8,6 +8,7 @@ import { parseMessage } from "../lib/messages.ts";
 import { createRealDeps, MountManager } from "./mount_manager.ts";
 import { closeLog, initLog, log } from "./logger.ts";
 import { handleMessage, type HandlerDeps } from "./handlers.ts";
+import { acceptConnections } from "./accept.ts";
 
 const VERSION = "0.7.0";
 
@@ -20,6 +21,8 @@ const AGENT_DIR = `${HOME}/.local/share/open-agent`;
 const SOCKET_PATH = `${AGENT_DIR}/open-agent.sock`;
 const TCP_HOST = "127.0.0.1";
 const TCP_PORT = 19876;
+const TCP_BIND_ATTEMPTS = 3;
+const TCP_BIND_RETRY_MS = 500;
 const MOUNT_BASE = `${HOME}/.remote-mounts`;
 const LOG_PATH = `${AGENT_DIR}/agent.log`;
 const UNMOUNT_GRACE_MS = 30_000; // 30s after last session disconnects
@@ -108,16 +111,25 @@ async function handleConnection(conn: Deno.Conn): Promise<void> {
 
 // --- Main ---
 
-async function acceptConnections(listener: Deno.Listener): Promise<void> {
-  try {
-    for await (const conn of listener) {
-      handleConnection(conn).catch((e) =>
-        log(`Unhandled connection error: ${e}`)
-      );
+/**
+ * Bind the TCP fallback, retrying briefly. A launchd restart can race the
+ * previous instance's socket teardown, and losing that race used to leave the
+ * daemon with no fallback transport until the next restart.
+ */
+async function listenTcp(): Promise<Deno.Listener | null> {
+  for (let attempt = 1; attempt <= TCP_BIND_ATTEMPTS; attempt++) {
+    try {
+      return Deno.listen({ hostname: TCP_HOST, port: TCP_PORT });
+    } catch (e) {
+      const last = attempt === TCP_BIND_ATTEMPTS;
+      if (last) {
+        log(`TCP fallback unavailable on ${TCP_HOST}:${TCP_PORT}: ${e}`);
+        return null;
+      }
+      await new Promise((r) => setTimeout(r, TCP_BIND_RETRY_MS));
     }
-  } catch (e) {
-    log(`Listener error: ${e}`);
   }
+  return null;
 }
 
 async function main(): Promise<void> {
@@ -136,16 +148,13 @@ async function main(): Promise<void> {
   // TCP is a fallback transport; the port may legitimately be held by an
   // sshd RemoteForward when this machine is also an open-agent remote, so
   // a failed bind must not take down the Unix listener.
-  let tcpListener: Deno.Listener | null = null;
-  try {
-    tcpListener = Deno.listen({ hostname: TCP_HOST, port: TCP_PORT });
-    log(`open-agent listening on ${TCP_HOST}:${TCP_PORT}`);
-  } catch (e) {
-    log(`TCP fallback unavailable on ${TCP_HOST}:${TCP_PORT}: ${e}`);
-  }
+  const tcpListener = await listenTcp();
+  if (tcpListener) log(`open-agent listening on ${TCP_HOST}:${TCP_PORT}`);
 
   // Graceful shutdown
+  let shuttingDown = false;
   const shutdown = async () => {
+    shuttingDown = true;
     log("Shutting down...");
     unixListener.close();
     tcpListener?.close();
@@ -160,9 +169,21 @@ async function main(): Promise<void> {
   Deno.addSignalListener("SIGINT", shutdown);
   Deno.addSignalListener("SIGTERM", shutdown);
 
-  const accepts = [acceptConnections(unixListener)];
-  if (tcpListener) accepts.push(acceptConnections(tcpListener));
+  const accepts = [acceptConnections(unixListener, handleConnection, log)];
+  if (tcpListener) {
+    accepts.push(acceptConnections(tcpListener, handleConnection, log));
+  }
   await Promise.all(accepts);
+
+  // Every listener is gone but nobody asked us to stop, so the daemon is up
+  // with no way to be reached. Exit non-zero: the launchd job sets
+  // KeepAlive/SuccessfulExit=false, so a clean exit here would be read as
+  // "meant to stop" and the daemon would stay down until the next login.
+  if (!shuttingDown) {
+    log("All listeners closed unexpectedly — exiting for restart");
+    closeLog();
+    Deno.exit(1);
+  }
 }
 
 main();
