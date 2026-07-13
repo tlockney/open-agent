@@ -199,6 +199,18 @@ for cmd in $INSTALL_CMDS; do
 done
 info "CLI wrappers → $BIN_DIR/ ($INSTALL_CMDS)"
 
+# Switching a machine from a full install to --no-daemon leaves the host-only
+# wrappers behind. There is no daemon here for them to drive any more, so they
+# would fail at the socket; drop them rather than leave commands that cannot work.
+if [[ $WITH_DAEMON -eq 0 ]]; then
+    for cmd in $DAEMON_CMDS; do
+        if [[ -e "$BIN_DIR/$cmd" ]]; then
+            rm -f "$BIN_DIR/$cmd"
+            info "Removed $cmd (drives the local daemon; not installed here)"
+        fi
+    done
+fi
+
 # --- Copy hook and wrapper template ---
 
 cp "$SCRIPT_DIR/open-agent-hook.sh" "$AGENT_DIR/open-agent-hook.sh"
