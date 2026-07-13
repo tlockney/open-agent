@@ -12,7 +12,7 @@
 import { blue, green, red, yellow } from "jsr:@std/fmt@1/colors";
 import { existsSync } from "jsr:@std/fs@1/exists";
 
-const VERSION = "0.7.2";
+const VERSION = "0.7.3";
 const REPO_OWNER = "tlockney";
 const REPO_NAME = "open-agent";
 
