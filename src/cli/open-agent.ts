@@ -234,6 +234,11 @@ async function cmdSetupRemote(target: string): Promise<void> {
 
   const remoteCmds = remoteScripts.join(" ");
 
+  // Commands that only make sense on the daemon host. They are never deployed
+  // to a remote, so a wrapper for one there can only be a leftover from an
+  // earlier full install.
+  const hostOnlyCmds = ["rproj", "rtmux", "open-agent"].join(" ");
+
   let failed = 0;
   for (const host of hosts) {
     console.log();
@@ -273,7 +278,16 @@ async function cmdSetupRemote(target: string): Promise<void> {
       `for cmd in ${remoteCmds}; do ` +
       "cp oa-wrapper.sh ~/.local/bin/$cmd; " +
       "chmod +x ~/.local/bin/$cmd; " +
-      "done",
+      "done; " +
+      // A remote that once had a full install still has wrappers for the
+      // host-only commands, but we just replaced src/ with the remote subset
+      // that omits them — so they now point at modules that aren't there and
+      // die with "Module not found". Drop any wrapper whose module is gone.
+      `for cmd in ${hostOnlyCmds}; do ` +
+      "[ -e ~/.local/bin/$cmd ] && " +
+      "[ ! -f ~/.local/share/open-agent/src/cli/$cmd.ts ] && " +
+      "rm -f ~/.local/bin/$cmd; " +
+      "done; true",
     ], { stdin: "piped", input: tarballBytes });
 
     if (deployResult.success) {
