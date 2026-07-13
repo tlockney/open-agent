@@ -10,7 +10,7 @@ import { closeLog, initLog, log } from "./logger.ts";
 import { handleMessage, type HandlerDeps } from "./handlers.ts";
 import { acceptConnections } from "./accept.ts";
 
-const VERSION = "0.7.1";
+const VERSION = "0.7.2";
 
 const HOME = Deno.env.get("HOME");
 if (!HOME) {
