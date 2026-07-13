@@ -266,9 +266,18 @@ Legacy config at `~/.config/rproj/hosts` is auto-detected with a warning.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OPEN_AGENT_HOST` | hostname fallback | SSH config Host alias for this remote machine |
-| `OPEN_AGENT_SOCK` | `/tmp/open-agent.sock` | Path to the forwarded Unix socket |
-| `OPEN_AGENT_TCP_HOST` | `127.0.0.1` | TCP fallback host (when socket is unavailable) |
-| `OPEN_AGENT_TCP_PORT` | `19876` | TCP fallback port |
+| `OPEN_AGENT_SOCK` | `/tmp/open-agent.sock` on a remote, `~/.local/share/open-agent/open-agent.sock` locally | Path to the daemon socket |
+| `OPEN_AGENT_TCP_HOST` | `127.0.0.1` | TCP fallback host. Setting it also opts a remote *into* the TCP fallback (see below) |
+| `OPEN_AGENT_TCP_PORT` | `19876` | TCP fallback port. Same opt-in effect |
+
+**The TCP fallback is local-only by default.** The SSH config forwards the Unix
+socket, not the TCP port, so inside a remote session `127.0.0.1:19876` is not
+the personal Mac — it is whatever daemon runs on *that* machine. On a remote
+that runs a daemon of its own, falling back to it would serve the request on
+the wrong host: `ropen` opens the file there, `rcopy` writes to that clipboard,
+and the command exits 0 as though it worked. So on a remote the fallback is
+skipped unless you set `OPEN_AGENT_TCP_HOST` or `OPEN_AGENT_TCP_PORT`, which
+declares that you really did forward a TCP port to the daemon.
 
 Host identity is resolved in order: `OPEN_AGENT_HOST` env var, then `~/.config/open-agent/identity` file, then `hostname -s`.
 
@@ -302,7 +311,7 @@ deno run --allow-read --allow-write --allow-run --allow-env \
 
 ## Troubleshooting
 
-**Socket not found on remote:** Verify SSH config has `RemoteForward` and `StreamLocalBindUnlink yes`. If using `ControlMaster`, kill the control socket (`ssh -O exit workmbp`) and reconnect. The agent also listens on TCP `127.0.0.1:19876` as a fallback.
+**Socket not found on remote:** Verify SSH config has `RemoteForward` and `StreamLocalBindUnlink yes`. If using `ControlMaster`, kill the control socket (`ssh -O exit workmbp`) and reconnect — a control master opened while the daemon was down keeps forwarding to a socket that is no longer there, and every later session rides it. Note the TCP fallback does not cover this case on a remote — it is local-only by default, see the environment variables under [Configuration](#configuration).
 
 **Mount failures:** Verify sshfs works manually: `sshfs workmbp:~ /tmp/test-mount`. Check that macFUSE kernel extension is loaded.
 
