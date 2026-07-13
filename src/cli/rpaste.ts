@@ -5,6 +5,7 @@
 
 import {
   checkResponse,
+  fail,
   getStringField,
   isRemoteSession,
   requireSock,
@@ -22,7 +23,12 @@ if (!isRemoteSession()) {
 
 requireSock();
 
-const response = await send({ action: "paste" });
+let response;
+try {
+  response = await send({ action: "paste" });
+} catch (e) {
+  fail(`agent unreachable: ${e instanceof Error ? e.message : String(e)}`);
+}
 checkResponse(response);
 
 const content = getStringField(response, "content");

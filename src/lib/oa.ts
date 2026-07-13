@@ -34,6 +34,29 @@ export const TCP_PORT = parseInt(
   Deno.env.get("OPEN_AGENT_TCP_PORT") ?? "19876",
   10,
 );
+
+/**
+ * Whether the TCP fallback is safe to try.
+ *
+ * The SSH config forwards the Unix socket, not the TCP port. So inside a
+ * remote session, 127.0.0.1:19876 is not the personal Mac — it is whatever
+ * daemon happens to run on *this* machine. On a remote that also runs a
+ * daemon of its own, falling back to it silently serves the request on the
+ * wrong machine: `ropen` opens the file here, `rcopy` writes to this
+ * clipboard, and the command exits 0 as if it had worked.
+ *
+ * So on a remote the fallback is opt-in: set OPEN_AGENT_TCP_HOST or
+ * OPEN_AGENT_TCP_PORT to say "I really did forward a TCP port to the daemon".
+ * Locally there is no ambiguity — loopback is our own daemon, which is the
+ * one we want.
+ */
+export function shouldTryTcp(remote: boolean, tcpConfigured: boolean): boolean {
+  return !remote || tcpConfigured;
+}
+
+const TCP_CONFIGURED = Boolean(
+  Deno.env.get("OPEN_AGENT_TCP_HOST") ?? Deno.env.get("OPEN_AGENT_TCP_PORT"),
+);
 // Resolve host identity: env var → identity file → hostname fallback
 function resolveHost(): string {
   const envHost = Deno.env.get("OPEN_AGENT_HOST");
@@ -85,9 +108,10 @@ function callerName(): string {
 export function requireSock(): void {
   if (!existsSync(SOCK)) {
     // Socket missing — TCP may still work, so just warn
-    console.error(
-      `${callerName()}: socket not found at ${SOCK}, will try TCP ${TCP_HOST}:${TCP_PORT}`,
-    );
+    const next = shouldTryTcp(isRemoteSession(), TCP_CONFIGURED)
+      ? `will try TCP ${TCP_HOST}:${TCP_PORT}`
+      : `no TCP fallback on a remote (it would be this machine's own daemon)`;
+    console.error(`${callerName()}: socket not found at ${SOCK}, ${next}`);
   }
 }
 
@@ -171,7 +195,18 @@ export async function send(
     failures.push(`socket ${SOCK}: not found`);
   }
 
-  // Fall back to TCP
+  // Fall back to TCP — but never onto this machine's own daemon (see
+  // shouldTryTcp). Serving the request on the wrong host is worse than failing.
+  if (!shouldTryTcp(isRemoteSession(), TCP_CONFIGURED)) {
+    throw new Error(
+      `failed to connect to agent\n${
+        failures.map((f) => `     - ${f}`).join("\n")
+      }\n     - TCP ${TCP_HOST}:${TCP_PORT}: skipped — on a remote this would be` +
+        ` this machine's own daemon, not the one across the tunnel.\n` +
+        `       (set OPEN_AGENT_TCP_HOST/PORT if you really did forward it)`,
+    );
+  }
+
   try {
     return await sendVia(
       { hostname: TCP_HOST, port: TCP_PORT },
