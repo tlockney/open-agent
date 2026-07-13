@@ -40,13 +40,15 @@ flowchart LR
 
 ## Requirements
 
-**Local (personal) machine:**
+**Local (personal) machine — runs the daemon:**
 
 - macOS
 - [Deno](https://deno.land/) runtime
 - [macFUSE](https://osxfuse.github.io/) + sshfs (`brew install --cask macfuse && brew install gromgit/fuse/sshfs-mac`)
 - [terminal-notifier](https://github.com/julienXX/terminal-notifier) for notifications (`brew install terminal-notifier`)
 - [1Password CLI](https://developer.1password.com/docs/cli/) for `rop` proxy (optional, `brew install --cask 1password-cli`)
+
+sshfs and terminal-notifier are needed only because the *daemon* mounts and notifies. A machine that just runs the `r*` commands against a daemon elsewhere needs neither — see [client-only install](#client-only-install-no-daemon).
 
 **Remote (work) machine:**
 
@@ -77,6 +79,32 @@ The install script:
 - Installs and starts a launchd service
 - Migrates config from legacy `~/.config/rproj/` if present
 - Prints SSH config to add
+
+### Client-only install (no daemon)
+
+A machine that only *uses* the `r*` commands — reaching a daemon on another
+Mac through the SSH tunnel — doesn't need a daemon of its own, and therefore
+doesn't need sshfs or macFUSE. Install it with `--no-daemon`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tlockney/open-agent/main/install.sh | bash -s -- --no-daemon
+
+# or from a clone
+./install.sh --local --no-daemon
+```
+
+This skips the sshfs and terminal-notifier checks (both are used only by the
+daemon), installs no launchd job, and leaves out `rproj`/`rtmux` — the project
+launchers that drive the local daemon. You get `ropen`, `rcopy`, `rpaste`,
+`rnotify`, `rpush`, `rpull`, `rop`, `rcode`, `ra`, and `open-agent`.
+
+Useful when sshfs can't be installed (no admin rights for the macFUSE kernel
+extension, say) or simply isn't wanted. If you later want the full daemon,
+re-run the installer without the flag.
+
+Note this is a different mechanism from `open-agent setup-remote <host>`,
+which *pushes* the same client-side scripts to a remote from your daemon Mac.
+Use `--no-daemon` when installing on the machine itself.
 
 After install, deploy scripts to remote hosts:
 
