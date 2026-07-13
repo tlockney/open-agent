@@ -5,6 +5,7 @@ import {
   FORWARDED_SOCK,
   getStringField,
   isRemoteSession,
+  shouldTryTcp,
 } from "./oa.ts";
 import type { OkResponse } from "./messages.ts";
 
@@ -126,6 +127,24 @@ Deno.test("isRemoteSession: true when several SSH vars set", () => {
 
 Deno.test("defaultSockPath: remote uses the SSH-forwarded socket", () => {
   assertEquals(defaultSockPath("/home/thomas", true), FORWARDED_SOCK);
+});
+
+// --- shouldTryTcp ---
+
+// A remote that also runs a daemon of its own (a work Mac that is both host
+// and remote) would otherwise have the fallback serve requests against
+// itself: ropen opens the file on the wrong machine and exits 0.
+Deno.test("shouldTryTcp: never falls back to loopback on a remote by default", () => {
+  assertEquals(shouldTryTcp(true, false), false);
+});
+
+Deno.test("shouldTryTcp: remote may opt in by configuring TCP explicitly", () => {
+  assertEquals(shouldTryTcp(true, true), true);
+});
+
+Deno.test("shouldTryTcp: local always tries TCP — loopback is our own daemon", () => {
+  assertEquals(shouldTryTcp(false, false), true);
+  assertEquals(shouldTryTcp(false, true), true);
 });
 
 Deno.test("defaultSockPath: local uses the daemon's own socket, not /tmp", () => {

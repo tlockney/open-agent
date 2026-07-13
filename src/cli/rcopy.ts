@@ -27,5 +27,10 @@ if (!isRemoteSession()) {
 
 requireSock();
 
-const response = await send({ action: "copy", content: input });
+let response;
+try {
+  response = await send({ action: "copy", content: input });
+} catch (e) {
+  fail(`agent unreachable: ${e instanceof Error ? e.message : String(e)}`);
+}
 checkResponse(response);
