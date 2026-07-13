@@ -280,6 +280,8 @@ deno run --allow-read --allow-write --allow-run --allow-env \
 
 **Agent not running:** `launchctl list | grep open-agent`. Check logs: `cat ~/.local/share/open-agent/launchd-stderr.log`.
 
+**`agent unreachable` from every r\* command, on every machine:** Check whether the daemon is still alive (`launchctl list | grep open-agent` — a `-` in the first column means it exited). Before v0.7.1 the daemon could exit silently: macOS returns `EINVAL` from `accept()` when a client closes between `connect()` and `accept()` — which short-lived r\* commands do routinely — and that error tore down the Unix listener. With no listener left the process exited *cleanly*, and because the launchd job sets `KeepAlive`/`SuccessfulExit=false`, launchd treated that as intentional and never restarted it. `launchctl kickstart -k gui/$(id -u)/com.open-agent.daemon` revives it; upgrading fixes it for good.
+
 **Daemon crash-loops with `NotCapable: Requires net access to "unix:..."`:** Deno 2.9 moved Unix sockets from `--allow-read`/`--allow-write` under `--allow-net`, with a `unix:<absolute-path>` grant syntax (the old bare `unix` token no longer matches). Re-run `install.sh` to regenerate the launchd plist with the correct grant.
 
 **Remote `r*` command prompts `Deno requests net access to "unix:/tmp/open-agent.sock"`:** The remote is running a pre-Deno-2.9 permission grant that only covers the TCP fallback. Redeploy the current wrapper and scripts with `open-agent setup-remote <host>` (or `all`) from the local Mac, then reconnect.

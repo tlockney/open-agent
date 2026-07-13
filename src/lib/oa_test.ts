@@ -1,5 +1,11 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { formatErrorMessage, getStringField, isRemoteSession } from "./oa.ts";
+import {
+  defaultSockPath,
+  formatErrorMessage,
+  FORWARDED_SOCK,
+  getStringField,
+  isRemoteSession,
+} from "./oa.ts";
 import type { OkResponse } from "./messages.ts";
 
 // --- getStringField ---
@@ -113,5 +119,21 @@ Deno.test("isRemoteSession: true when several SSH vars set", () => {
   withSshEnv(
     { SSH_CONNECTION: "x", SSH_TTY: "y" },
     () => assertEquals(isRemoteSession(), true),
+  );
+});
+
+// --- defaultSockPath ---
+
+Deno.test("defaultSockPath: remote uses the SSH-forwarded socket", () => {
+  assertEquals(defaultSockPath("/home/thomas", true), FORWARDED_SOCK);
+});
+
+Deno.test("defaultSockPath: local uses the daemon's own socket, not /tmp", () => {
+  // The daemon binds ~/.local/share/open-agent/open-agent.sock and never
+  // listens on /tmp. Defaulting to /tmp locally meant the CLI could only ever
+  // reach the daemon over the TCP fallback.
+  assertEquals(
+    defaultSockPath("/Users/thomas", false),
+    "/Users/thomas/.local/share/open-agent/open-agent.sock",
   );
 });

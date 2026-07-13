@@ -104,7 +104,8 @@ try {
   const detail = e instanceof Error ? e.message : String(e);
   fail(
     `agent unreachable: ${detail}\n` +
-      `  → SSH tunnel may have died. Reconnect SSH, or run 'ra ping' to diagnose.`,
+      `  → Is the daemon up on the local Mac ('launchctl list | grep open-agent')?\n` +
+      `    If so, the SSH tunnel may have died — reconnect SSH, or run 'ra ping' to diagnose.`,
   );
 }
 
