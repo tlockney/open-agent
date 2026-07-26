@@ -9,7 +9,7 @@ import {
   fail,
   getStringField,
   HOME,
-  HOST,
+  requireHost,
   requireSock,
   send,
 } from "../lib/oa.ts";
@@ -55,7 +55,7 @@ target = Deno.realPathSync(target);
 const msg = buildPushMessage({
   path: target,
   dest: parsed.dest,
-  host: HOST,
+  host: requireHost(),
   home: HOME,
 });
 

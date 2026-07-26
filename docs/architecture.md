@@ -64,6 +64,7 @@ src/
 │   └── logger.ts           # Append-to-file + stdout logging
 ├── lib/                    # Shared by both sides
 │   ├── messages.ts         # Message union, Response/ErrorCode types, parseMessage
+│   ├── framing.ts          # readMessage()/writeMessage() — newline framing
 │   ├── oa.ts               # Client transport: send(), host identity, error render
 │   ├── path_utils.ts       # translatePath() — remote path → mount path
 │   └── rproj_utils.ts      # Pure helpers for rproj (parsing, fzf formatting)
@@ -77,7 +78,7 @@ src/
     ├── ra.ts               # Admin/diagnostics: ping status mounts reset doctor
     ├── rcode.ts rtmux.ts   # Context-aware wrappers → ropen -v / rproj
     ├── rproj.ts            # Local project browser (fzf, multi-host, Alfred)
-    └── open-agent.ts       # Local CLI: setup-remote, update, status, version
+    └── open-agent.ts       # Local CLI: setup-remote, update, version
 
 oa-wrapper.sh               # busybox-style dispatcher, installed under many names
 open-agent-hook.sh          # Remote shell hook (sourced in .zshrc/.bashrc)
@@ -168,6 +169,25 @@ A connection = **one request, one response**, both single-line JSON.
 client → {"action":"open","host":"work","remoteHome":"/home/me","path":"…"}\n
 server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}\n
 ```
+
+Framing lives in `src/lib/framing.ts` and both sides use it, because neither
+direction of a socket is message-oriented:
+
+- **`readMessage()`** reads until the newline instead of taking a single fixed
+  buffer. TCP has no message boundaries, so a payload can arrive split across
+  several reads whatever its size. EOF also terminates a message, so a client
+  that writes a payload and closes without a trailing newline is still
+  understood.
+- **`writeMessage()`** loops until every byte is out. `Deno.Conn.write`
+  resolves with the number of bytes it actually accepted, which for a payload
+  past the socket buffer is fewer than it was handed — a single un-looped
+  write truncated large responses on the wire and left the peer waiting for a
+  newline that never came.
+
+One message is capped at `MAX_MESSAGE_BYTES` (8 MiB) so a peer cannot make the
+daemon allocate without limit. The daemon refuses anything larger and closes;
+`send()` checks the size up front so the client reports the limit rather than
+a broken pipe.
 
 `parseMessage()` (`src/lib/messages.ts`) validates the discriminated `Message`
 union field-by-field and rejects anything malformed. The full action set:
@@ -303,9 +323,14 @@ Shared by every `r*` client. Central pieces:
   `SSH_TTY`, or `SSH_CLIENT` is set. Every client branches on this first.
 - **Identity resolution (`resolveHost`)** — how the remote names itself to the
   daemon, used as the mount key: `OPEN_AGENT_HOST`, else
-  `~/.config/open-agent/identity`, else the literal `"unknown"`. The value must
-  match an SSH `Host` alias on the local Mac, since the daemon feeds it straight
-  to `sshfs`.
+  `~/.config/open-agent/identity`, else the `UNRESOLVED_HOST` sentinel. Blank
+  and whitespace-only values count as absent. There is deliberately **no
+  `hostname -s` fallback**: the value must match an SSH `Host` alias on the
+  local Mac, since the daemon feeds it straight to `sshfs`, and a remote's own
+  hostname usually is not that alias — guessing mounts the wrong host instead
+  of failing. `requireHost()` turns the sentinel into an actionable error, and
+  `open-agent-hook.sh` resolves identity identically and declines to register a
+  session when it comes back unresolved.
 - **Socket path (`defaultSockPath`)** — differs by side. On a remote the daemon
   is reachable only through the tunnel, which binds `/tmp/open-agent.sock`.
   Locally the daemon binds its own socket under `~/.local/share` and never
@@ -394,8 +419,12 @@ Manages the toolkit itself, primarily from the local Mac:
   die with "Module not found".
 - `update` — fetches the latest GitHub release tarball and runs
   `install.sh --local`.
-- `status` — queries the daemon. See §10; this subcommand is currently broken.
 - `version`.
+
+`open-agent status` was removed: it read response fields the daemon never
+emitted, and `ra status` / `ra mounts` / `ra doctor` cover the same ground
+correctly through the shared transport. The subcommand now exits with a
+pointer to those.
 
 ### 5.3 `rproj` (project browser)
 
@@ -527,7 +556,7 @@ remount.
 
 | Env var | Default | Side | Meaning |
 |---------|---------|------|---------|
-| `OPEN_AGENT_HOST` | `unknown` | remote | Host identity |
+| `OPEN_AGENT_HOST` | *(unset → unresolved)* | remote | Host identity; must match the local Mac's SSH `Host` alias |
 | `OPEN_AGENT_SOCK` | `/tmp/open-agent.sock` remote, `~/.local/share/…` local | both | Socket path |
 | `OPEN_AGENT_TCP_HOST` / `OPEN_AGENT_TCP_PORT` | `127.0.0.1` / `19876` | both | TCP target; **setting either also opts a remote into the TCP fallback** |
 | `OPEN_AGENT_DIR` | `~/.local/share/open-agent` | both | Where `oa-wrapper.sh` finds `src/` |
@@ -536,6 +565,7 @@ remount.
 |-----------------|---------|---------|
 | `UNMOUNT_GRACE_MS` | `30000` | Idle grace before unmount |
 | `MAX_CONSECUTIVE_ACCEPT_ERRORS` | `20` | Accept failures before abandoning a listener |
+| `MAX_MESSAGE_BYTES` | `8 MiB` | Largest single request or response |
 | `TCP_BIND_ATTEMPTS` / `TCP_BIND_RETRY_MS` | `3` / `500` | TCP bind retry policy |
 | sshfs `cache_timeout` / `attr_timeout` | `120` | Metadata cache seconds |
 
@@ -573,22 +603,10 @@ remount.
 Defects and limitations known at the time of writing, kept here so the document
 does not read as an endorsement of everything above.
 
-- **Request size cap.** `handleConnection()` performs a single `conn.read()`
-  into an 8 KB buffer rather than reading to the newline delimiter, and the
-  client reads one 64 KB buffer the same way. A request larger than the buffer —
-  or one merely split across TCP segments — is truncated and surfaces as an
-  opaque "Bad request". `rcopy` of a large clipboard hits this.
-- **Host identity diverges between hook and client.** `open-agent-hook.sh` falls
-  back to `hostname -s`; `src/lib/oa.ts` falls back to the literal `"unknown"`.
-  On a remote with neither `OPEN_AGENT_HOST` nor an identity file, the hook and
-  the `r*` commands register under different keys.
-- **`open-agent status` is broken.** It reads a top-level `sessions` key and a
-  `path` field that `handleStatus` does not emit (sessions are nested under
-  `mounts[host]`, the field is `mountPoint`), so it always reports zero sessions
-  and unknown paths. `ra status` / `ra mounts` are correct; prefer them.
-- **Three transport implementations.** `src/lib/oa.ts` is the real one;
-  `open-agent.ts` and `rproj.ts` each hand-roll their own `Deno.connect` to the
-  socket, bypassing the error-code handling and the TCP-safety guard.
+- **`rproj` hand-rolls its own transport.** `src/lib/oa.ts` is the real client;
+  `rproj.ts` still opens its own `Deno.connect` to the socket, bypassing the
+  error-code handling and the newline framing. It is the last of what were
+  three separate transport implementations.
 - **`isMounted` substring-matches `mount(8)` output**, so host `work` matches a
   mount line for `work2`.
 - **No persisted mount state.** The mount table is in memory only. A daemon

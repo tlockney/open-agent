@@ -29,6 +29,7 @@ import {
   TERMINAL_RESTORE_SEQUENCE,
 } from "../lib/rproj_utils.ts";
 import { formatErrorMessage } from "../lib/oa.ts";
+import { writeMessage } from "../lib/framing.ts";
 
 // --- Constants ---
 
@@ -226,7 +227,7 @@ async function agentSend(message: string): Promise<Record<string, unknown>> {
     );
   }
   try {
-    await conn.write(new TextEncoder().encode(message + "\n"));
+    await writeMessage(conn, message);
     const buf = new Uint8Array(65536);
     const n = await conn.read(buf);
     if (!n) throw new Error("No response from agent");

@@ -9,7 +9,7 @@ import {
   fail,
   getStringField,
   HOME,
-  HOST,
+  requireHost,
   requireSock,
   send,
 } from "../lib/oa.ts";
@@ -58,7 +58,12 @@ try {
 }
 
 const response = await send(
-  buildPullMessage({ localPath, remoteDest, host: HOST, home: HOME }),
+  buildPullMessage({
+    localPath,
+    remoteDest,
+    host: requireHost(),
+    home: HOME,
+  }),
   30,
 );
 

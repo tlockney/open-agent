@@ -13,10 +13,12 @@ import {
   fail,
   formatErrorMessage,
   HOST,
+  HOST_IDENTITY_HELP,
   send,
   SOCK,
   TCP_HOST,
   TCP_PORT,
+  UNRESOLVED_HOST,
 } from "../lib/oa.ts";
 
 const USAGE = `Usage: ra <command> [args]
@@ -171,7 +173,11 @@ async function runDoctor(): Promise<void> {
     `  socket:   ${SOCK} ${existsSync(SOCK) ? "(present)" : "(missing)"}`,
   );
   console.log(`  tcp:      ${TCP_HOST}:${TCP_PORT}`);
-  console.log(`  host id:  ${HOST}`);
+  console.log(
+    HOST === UNRESOLVED_HOST
+      ? `  host id:  (unresolved) — ${HOST_IDENTITY_HELP}`
+      : `  host id:  ${HOST}`,
+  );
   console.log("");
 
   // Daemon reachability via ping.

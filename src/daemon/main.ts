@@ -5,6 +5,11 @@
 // files locally.
 
 import { parseMessage } from "../lib/messages.ts";
+import {
+  MessageTooLargeError,
+  readMessage,
+  writeMessage,
+} from "../lib/framing.ts";
 import { createRealDeps, MountManager } from "./mount_manager.ts";
 import { closeLog, initLog, log } from "./logger.ts";
 import { handleMessage, type HandlerDeps } from "./handlers.ts";
@@ -74,14 +79,27 @@ const handlerDeps: HandlerDeps = {
 async function handleConnection(conn: Deno.Conn): Promise<void> {
   log(`Connection received from ${conn.remoteAddr?.transport ?? "unknown"}`);
   try {
-    const buf = new Uint8Array(8192);
-    const n = await conn.read(buf);
-    if (!n) {
+    let raw: string;
+    try {
+      raw = (await readMessage(conn)).trim();
+    } catch (e) {
+      // Oversized input is the one read failure worth naming: it used to
+      // arrive as a truncated line and an unexplained "Bad request".
+      if (!(e instanceof MessageTooLargeError)) throw e;
+      log(`Rejected oversized request: ${e.message}`);
+      const err = JSON.stringify({
+        ok: false,
+        error: `Bad request: ${e.message}`,
+      });
+      await writeMessage(conn, err);
+      return;
+    }
+
+    if (!raw) {
       log("Connection closed with no data");
       return;
     }
 
-    const raw = new TextDecoder().decode(buf.subarray(0, n)).trim();
     let msg;
     try {
       msg = parseMessage(JSON.parse(raw));
@@ -90,17 +108,17 @@ async function handleConnection(conn: Deno.Conn): Promise<void> {
         ok: false,
         error: `Bad request: ${e instanceof Error ? e.message : e}`,
       });
-      await conn.write(new TextEncoder().encode(err + "\n"));
+      await writeMessage(conn, err);
       return;
     }
 
     const response = await handleMessage(msg, handlerDeps);
-    await conn.write(new TextEncoder().encode(response + "\n"));
+    await writeMessage(conn, response);
   } catch (e) {
     log(`Connection error: ${e}`);
     try {
       const err = JSON.stringify({ ok: false, error: String(e) });
-      await conn.write(new TextEncoder().encode(err + "\n"));
+      await writeMessage(conn, err);
     } catch { /* connection dead */ }
   } finally {
     try {
