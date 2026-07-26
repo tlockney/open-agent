@@ -803,7 +803,7 @@
     <div class="meta">
       <span><strong>Status</strong> · As built</span>
       <span><strong>Source</strong> · tlockney/open-agent</span>
-      <span><strong>Updated</strong> · 2026·07·08</span>
+      <span><strong>Updated</strong> · 2026·07·26</span>
     </div>
   </header>
 
@@ -814,12 +814,13 @@
       <li><a href="#section-2">Component map (repo layout)</a></li>
       <li><a href="#section-3">The daemon</a></li>
       <li><a href="#section-4">The remote side</a></li>
-      <li><a href="#section-5">Local-only tooling</a></li>
+      <li><a href="#section-5">Diagnostics &amp; local-only tooling</a></li>
       <li><a href="#section-6">Installation &amp; lifecycle</a></li>
       <li><a href="#section-7">Data flow walkthrough</a></li>
       <li><a href="#section-8">Configuration reference</a></li>
       <li><a href="#section-9">Design principles &amp; constraints</a></li>
-      <li><a href="#section-10">Evolution / open work</a></li>
+      <li><a href="#section-10">Known gaps</a></li>
+      <li><a href="#section-11">Evolution / open work</a></li>
     </ol>
   </nav>
 
@@ -830,12 +831,13 @@
       <li><a href="#section-2">Component map</a></li>
       <li><a href="#section-3">The daemon</a></li>
       <li><a href="#section-4">The remote side</a></li>
-      <li><a href="#section-5">Local-only tooling</a></li>
+      <li><a href="#section-5">Diagnostics &amp; tooling</a></li>
       <li><a href="#section-6">Install &amp; lifecycle</a></li>
       <li><a href="#section-7">Data flow</a></li>
       <li><a href="#section-8">Configuration</a></li>
       <li><a href="#section-9">Design principles</a></li>
-      <li><a href="#section-10">Evolution</a></li>
+      <li><a href="#section-10">Known gaps</a></li>
+      <li><a href="#section-11">Evolution</a></li>
     </ol>
   </nav>
 
@@ -846,21 +848,23 @@
 
   <section id="section-1">
     <h2><a href="#section-1" class="heading-link"><span class="num">§ 01</span>High-level model</a></h2>
-    <p class="lead-para">There are always <strong>two sides</strong>. A personal Mac runs the server; a remote host runs the clients. The two are joined by SSH, whose <code>RemoteForward</code> tunnels the daemon's listener to a fixed path or port on the remote — so the remote scripts can reach the daemon as if it were local.</p>
+    <p class="lead-para">There are always <strong>two sides</strong>. A personal Mac runs the server; a remote host runs the clients. The two are joined by SSH, whose <code>RemoteForward</code> tunnels the daemon's listener to a fixed path or port on the remote — so the remote commands can reach the daemon as if it were local.</p>
 
     <table>
       <thead><tr><th>Side</th><th>Runs</th><th>Role</th></tr></thead>
       <tbody>
-        <tr><td><strong>Local Mac</strong> (personal)</td><td><code>open-agent-daemon.ts</code> (Deno, launchd)</td><td>Server: receives requests, executes local actions</td></tr>
-        <tr><td><strong>Remote host</strong> (work Mac, dev box, …)</td><td><code>r*</code> client scripts + <code>open-agent-hook.sh</code></td><td>Clients: send JSON requests over a forwarded transport</td></tr>
+        <tr><td><strong>Local Mac</strong> (personal)</td><td><code>src/daemon/main.ts</code> (Deno, launchd)</td><td>Server: receives requests, executes local actions</td></tr>
+        <tr><td><strong>Remote host</strong> (work Mac, dev box, …)</td><td><code>r*</code> client commands + <code>open-agent-hook.sh</code></td><td>Clients: send JSON requests over a forwarded transport</td></tr>
       </tbody>
     </table>
+
+    <p>Every <code>r*</code> command is <strong>dual-mode</strong>: each one checks <code>isRemoteSession()</code> first and runs the native local equivalent when it is <em>not</em> inside SSH. <code>rcopy</code> on the local Mac pipes straight to <code>pbcopy</code>; <code>rop</code> execs the real <code>op</code>. Only inside an SSH session does a command reach for the daemon — which is why the same binaries can be installed everywhere.</p>
 
     <figure>
       <pre class="mermaid">flowchart LR
     subgraph remote["Remote host (work/dev)"]
         hook["open-agent-hook.sh&lt;br/&gt;connect/disconnect"]
-        rstar["r* commands&lt;br/&gt;ropen rcopy rop rpush …"]
+        rstar["r* commands&lt;br/&gt;ropen rcopy rop rpush ra …"]
     end
 
     subgraph local["Local Mac (personal)"]
@@ -880,52 +884,90 @@
   <section id="section-2">
     <h2><a href="#section-2" class="heading-link"><span class="num">§ 02</span>Component map (repo layout)</a></h2>
 
-<pre>open-agent-daemon.ts        # The daemon (local side, server)
+<pre>src/
+├── daemon/                 # Local side, server
+│   ├── main.ts             # Entry point: config, DI wiring, listeners, shutdown
+│   ├── accept.ts           # Accept loop + per-connection error policy
+│   ├── handlers.ts         # One handler per action, over injected deps
+│   ├── mount_manager.ts    # SSHFS mount lifecycle (the stateful core)
+│   └── logger.ts           # Append-to-file + stdout logging
+├── lib/                    # Shared by both sides
+│   ├── messages.ts         # Message union, Response/ErrorCode types, parseMessage
+│   ├── oa.ts               # Client transport: send(), host identity, error render
+│   ├── path_utils.ts       # translatePath() — remote path → mount path
+│   └── rproj_utils.ts      # Pure helpers for rproj (parsing, fzf formatting)
+└── cli/
+    ├── args.ts             # Pure argument parsing + message building, all CLIs
+    ├── ropen.ts            # Open files/URLs/VS Code
+    ├── rcopy.ts rpaste.ts  # Clipboard
+    ├── rpush.ts rpull.ts   # File transfer
+    ├── rnotify.ts          # macOS notifications
+    ├── rop.ts              # 1Password CLI proxy
+    ├── ra.ts               # Admin/diagnostics: ping status mounts reset doctor
+    ├── rcode.ts rtmux.ts   # Context-aware wrappers → ropen -v / rproj
+    ├── rproj.ts            # Local project browser (fzf, multi-host, Alfred)
+    └── open-agent.ts       # Local CLI: setup-remote, update, status, version
+
+oa-wrapper.sh               # busybox-style dispatcher, installed under many names
 open-agent-hook.sh          # Remote shell hook (sourced in .zshrc/.bashrc)
 com.open-agent.daemon.plist # launchd service template (YOURUSER placeholders)
-install.sh                  # Local installer (curl|sh or --local)
+install.sh                  # Installer (curl|sh, --local, --no-daemon)
 ssh_config.example          # SSH RemoteForward reference
-
-bin/
-├── open-agent              # Local CLI: setup-remote, update, status, version
-├── rproj                   # Local project browser (fzf, multi-host, Alfred)
-├── ropen                   # Remote: open files/URLs/VS Code
-├── rcode                   # Remote↔local aware: delegates to ropen or rproj
-├── rcopy  / rpaste         # Remote: clipboard
-├── rpush  / rpull          # Remote: file transfer
-├── rnotify                 # Remote: macOS notifications
-├── rop                     # Remote: 1Password CLI proxy
-├── rtmux                   # Remote↔local: wrapper → rproj tmux
-└── lib/
-    └── oa.ts               # Shared client transport library (send/checkResponse)
+deno.json                   # Tasks (test/check/lint/fmt), strict TS, lint rules
 
 docs/
-├── architecture.md         # This file
+├── architecture.md         # Markdown source for this page
+├── architecture.html       # This file
 ├── remote-workflow.md      # User guide / setup
 ├── connectivity-plan.md    # Transport layer design (socket, TCP, Tailscale)
 └── ipad-support-plan.md    # iPad client roadmap</pre>
 
-    <p>Scripts are written in <strong>TypeScript run by Deno</strong> — each declares its own granular <code>--allow-*</code> permissions in its shebang — except the hook (<code>bash</code>) and the installer (<code>bash</code>).</p>
+    <p>Everything is <strong>TypeScript run by Deno</strong>, except the hook, the wrapper, and the installer (<code>bash</code>). There is no build step and no bundler.</p>
+
+    <h3>2.1 · How the code is layered</h3>
+    <p>The shape worth knowing is the split between <strong>pure</strong> and <strong>effectful</strong> modules, because it is what makes the project testable without sockets or mounts:</p>
+    <ul>
+      <li><code>src/lib/</code> and <code>src/cli/args.ts</code> are pure. Parsing, path translation, message construction, fzf formatting — no I/O, directly unit-testable.</li>
+      <li><code>src/daemon/mount_manager.ts</code> and <code>handlers.ts</code> are effectful but take their effects as injected interfaces (<code>MountDeps</code>, <code>HandlerDeps</code>). Tests supply fake <code>runCommand</code>/<code>stat</code>/<code>setTimeout</code> and drive real lifecycle logic.</li>
+      <li><code>src/daemon/main.ts</code> is the only module that constructs real <code>Deno.Command</code>, <code>Deno.stat</code>, and timers. It is the composition root and holds no logic.</li>
+    </ul>
+
+    <p class="tldr"><code>deno task test</code> runs the whole suite with only <code>--allow-read --allow-env</code> — possible precisely because nothing under test touches the network or spawns processes.</p>
   </section>
 
   <section id="section-3">
-    <h2><a href="#section-3" class="heading-link"><span class="num">§ 03</span>The daemon <span style="font-weight:400">(<code>open-agent-daemon.ts</code>)</span></a></h2>
-    <p>The daemon is a single-file Deno program with four logical regions: listeners, the wire protocol, SSHFS mount management, and logging.</p>
+    <h2><a href="#section-3" class="heading-link"><span class="num">§ 03</span>The daemon</a></h2>
+    <p>Five modules: an entry point that wires dependencies, an accept loop, per-action handlers, the mount manager, and logging.</p>
 
     <h3>3.1 · Listeners (transport in)</h3>
-    <p><code>main()</code> opens <strong>two</strong> listeners in parallel:</p>
+    <p><code>main()</code> opens <strong>two</strong> listeners:</p>
     <ol>
       <li><strong>Unix socket</strong> — <code>~/.local/share/open-agent/open-agent.sock</code> (primary)</li>
       <li><strong>TCP</strong> — <code>127.0.0.1:19876</code> (fallback for Tailscale SSH / iPad clients)</li>
     </ol>
-    <p>Both feed the same <code>acceptConnections()</code> → <code>handleConnection()</code> loop. The TCP listener exists precisely because some SSH implementations (Tailscale SSH, iPad apps) cannot forward Unix sockets — see <a href="./connectivity-plan.md">connectivity-plan.md</a>.</p>
+    <p>Both feed the same <code>acceptConnections()</code> → <code>handleConnection()</code> path. The TCP listener exists precisely because some SSH implementations (Tailscale SSH, iPad apps) cannot forward Unix sockets — see <a href="./connectivity-plan.md">connectivity-plan.md</a>.</p>
+
+    <p>The TCP bind is <strong>retried three times at 500 ms</strong> and is allowed to fail: the port may legitimately be held by an sshd <code>RemoteForward</code> when this machine is <em>also</em> an open-agent remote. A failed TCP bind must not take down the Unix listener, so it only logs and continues.</p>
 
     <div class="note caveat">
       <span class="note-label">Caveat · No authentication</span>
-      <p>The daemon does <strong>not</strong> authenticate connections. Binding is strictly localhost, which is safe only because traffic arrives inside an SSH tunnel. Exposing the TCP listener beyond loopback would require adding auth (not yet implemented).</p>
+      <p>The daemon does <strong>not</strong> authenticate connections. Binding is strictly localhost, which is safe only because traffic arrives inside an SSH tunnel. Exposing the TCP listener beyond loopback would require adding auth (not yet implemented). The daemon also does not currently inspect <code>conn.remoteAddr</code> beyond logging the transport, so it cannot yet distinguish loopback from non-loopback callers.</p>
     </div>
 
-    <h3>3.2 · Wire protocol: JSON-over-newline</h3>
+    <h3>3.2 · The accept loop (<code>accept.ts</code>)</h3>
+    <p>Split out from <code>main.ts</code> so the retry policy is testable without binding real sockets. Its one job is deciding which <code>accept()</code> failures are fatal:</p>
+    <ul>
+      <li><code>BadResource</code> / <code>Interrupted</code> mean the listener was closed by <code>shutdown()</code> — a normal end to the loop.</li>
+      <li>Anything else is treated as <strong>per-connection noise</strong>, not listener death. macOS returns <code>EINVAL</code> when a client closes between <code>connect()</code> and <code>accept()</code>, which every short-lived <code>r*</code> command does routinely. Treating that as fatal previously tore down the Unix listener on the first such connection.</li>
+      <li>After <code>MAX_CONSECUTIVE_ACCEPT_ERRORS</code> (20) in a row, the listener is considered genuinely broken and the loop gives up.</li>
+    </ul>
+
+    <div class="note">
+      <span class="note-label">Note · Why the daemon exits non-zero</span>
+      <p>If <em>both</em> loops return without a shutdown having been requested, the daemon is running with no way to be reached. <code>main()</code> then exits <strong>non-zero on purpose</strong>: the launchd job sets <code>KeepAlive/SuccessfulExit=false</code>, so a clean exit would be read as "meant to stop" and the daemon would stay down until the next login.</p>
+    </div>
+
+    <h3>3.3 · Wire protocol: JSON-over-newline</h3>
     <p>A connection is <strong>one request, one response</strong>, both single-line JSON.</p>
 
 <pre>client → {"action":"open","host":"work","remoteHome":"/home/me","path":"…"}
@@ -946,13 +988,39 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
         <tr><td><code>pull</code></td><td>Local file → remote</td><td>copy via SSHFS mount to remote dest</td></tr>
         <tr><td><code>op-read</code></td><td>Resolve one <code>op://</code> ref</td><td><code>op read</code> (local 1Password CLI)</td></tr>
         <tr><td><code>op-resolve</code></td><td>Resolve many <code>op://</code> refs in parallel</td><td><code>op read</code> × N via <code>Promise.all</code></td></tr>
-        <tr><td><code>status</code></td><td>Daemon introspection</td><td>returns version, mounts, sessions</td></tr>
+        <tr><td><code>status</code></td><td>Daemon introspection</td><td>returns version + per-host mount table</td></tr>
+        <tr><td><code>ping</code></td><td>Liveness probe</td><td>none — no mount checks, no subprocesses</td></tr>
+        <tr><td><code>doctor</code></td><td>Per-mount health probe</td><td><code>stat</code> each mount with a timeout</td></tr>
+        <tr><td><code>reset</code></td><td>Tear down mount(s) and purge state</td><td><code>umount</code> one host or all</td></tr>
       </tbody>
     </table>
 
-    <p>Every handler returns a JSON object with <code>ok: boolean</code> and either a result or an <code>error</code> string. Secret-bearing actions (<code>op-read</code>, <code>op-resolve</code>) deliberately do <strong>not</strong> log the references or resolved values.</p>
+    <p><code>ping</code> is deliberately inert so <code>ra ping</code> can distinguish "agent down" from "agent up but slow on a real request". Secret-bearing actions (<code>op-read</code>, <code>op-resolve</code>) never log the references or the resolved values.</p>
 
-    <h3>3.3 · SSHFS mount management</h3>
+    <h3>3.4 · Structured errors</h3>
+    <p>Responses are <strong>not</strong> <code>{ok: false, error: "some string"}</code>. Failures carry a typed object so clients can give accurate diagnostics and a recovery hint instead of a blanket "agent unreachable":</p>
+
+<pre><code class="language-ts">{ ok: false, error: { code: ErrorCode, message: string,
+                      host?: string, recovery?: string } }</code></pre>
+
+    <table>
+      <thead><tr><th><code>ErrorCode</code></th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>transport_unreachable</code></td><td>Could not reach the daemon at all (no socket, no TCP)</td></tr>
+        <tr><td><code>daemon_unresponsive</code></td><td>Connected, but no reply within the timeout</td></tr>
+        <tr><td><code>mount_missing</code></td><td>No mount entry for the requested host</td></tr>
+        <tr><td><code>mount_stale</code></td><td>Mount present in the table but unresponsive</td></tr>
+        <tr><td><code>path_not_found</code></td><td>Mount healthy, file genuinely missing on the remote</td></tr>
+        <tr><td><code>auth_failed</code></td><td>SSH/sshfs auth failed during (re)mount</td></tr>
+        <tr><td><code>internal</code></td><td>Unexpected daemon-side failure</td></tr>
+      </tbody>
+    </table>
+
+    <p>The distinction between <code>mount_stale</code> and <code>path_not_found</code> is the point of <code>verifyMountAndPath()</code> in <code>handlers.ts</code>: when a <code>stat</code> of the target path fails, it probes the <strong>mount root</strong> to disambiguate "your file isn't there" from "the mount died under us". In the latter case it forces a remount and retries once before giving up, and attaches <code>recovery: "ra reset &lt;host&gt;"</code> to the error.</p>
+
+    <p><code>formatErrorMessage()</code> on the client tolerates the legacy plain-string shape, so a new CLI talking to an older daemon still prints something sensible.</p>
+
+    <h3>3.5 · SSHFS mount management</h3>
     <p>The most intricate part of the daemon. One mount per remote host, at <code>~/.remote-mounts/&lt;host&gt;</code>, mounted on demand and torn down when idle.</p>
 
     <figure>
@@ -966,118 +1034,150 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
     Mounted --> PendingUnmount: last disconnect (30s grace)
     PendingUnmount --> Mounted: new connect (cancel timer)
     PendingUnmount --> Unmounted: timer fires, no sessions
-    Mounted --> Unmounted: SIGINT/SIGTERM (graceful shutdown)</pre>
+    Mounted --> Unmounted: reset / SIGINT / SIGTERM</pre>
       <figcaption>Mount lifecycle: one <code>MountState</code> per host, refcounted by session, with a 30s idle grace and stale-mount recovery.</figcaption>
     </figure>
 
     <p>Key implementation details:</p>
     <ul>
       <li><strong>Per-host serialization (<code>mountLocks</code>)</strong> — <code>ensureMount()</code> chains on a promise keyed by host so concurrent requests never spawn parallel <code>sshfs</code> processes. The chain uses <code>.catch()</code> shunts so one failed mount doesn't block later ones.</li>
-      <li><strong>Health check</strong> — <code>isMountResponsive()</code> runs <code>stat</code> with a 3s <code>AbortSignal</code> timeout. A hung FUSE mount would otherwise block indefinitely.</li>
+      <li><strong>Health check</strong> — <code>isMountResponsive()</code> first checks the <code>mount(8)</code> table, then runs <code>stat</code> with a 3s <code>AbortSignal</code> timeout. A hung FUSE mount would otherwise block indefinitely.</li>
       <li><strong>Stale recovery</strong> — if the mount exists but is unresponsive, <code>forceUnmount()</code> (plain <code>umount</code>, then macOS <code>diskutil unmount force</code>) and remount.</li>
       <li><strong>Session accounting</strong> — <code>connect</code> adds a <code>sessionId</code> to a <code>Set</code>; <code>disconnect</code> removes it. When the set empties, <code>scheduleUnmount()</code> arms a 30s timer (<code>UNMOUNT_GRACE_MS</code>); any new <code>connect</code> cancels it.</li>
       <li><strong>Path translation</strong> — <code>translatePath()</code> <code>normalize()</code>s the remote path and requires it to be under the remote <code>$HOME</code>; it then rewrites it onto the mount point. Paths outside <code>$HOME</code> are rejected (only <code>$HOME</code> is mounted).</li>
       <li><strong>Graceful shutdown</strong> — <code>SIGINT</code>/<code>SIGTERM</code> close both listeners, remove the socket, and unmount every host before exiting.</li>
     </ul>
 
-    <p><code>sshfs</code> is invoked with reconnect + keepalive options and metadata caching (<code>cache=yes</code>, <code>cache_timeout=120</code>) since slightly-stale attributes are fine for opens.</p>
+    <p><code>sshfs</code> is invoked with reconnect + keepalive options and metadata caching (<code>cache=yes</code>, <code>cache_timeout=120</code>, <code>attr_timeout=120</code>) since slightly-stale attributes are fine for opens.</p>
 
-    <h3>3.4 · Logging</h3>
-    <p><code>initLog()</code> opens <code>~/.local/share/open-agent/agent.log</code> for append; <code>log()</code> writes a timestamped line to both stdout (captured by launchd) and the file.</p>
+    <p>The mount table lives <strong>in memory only</strong>. See <a href="#section-10">§ 10</a> for what that costs across a daemon restart.</p>
+
+    <h3>3.6 · Logging</h3>
+    <p><code>initLog()</code> opens <code>~/.local/share/open-agent/agent.log</code> for append; <code>log()</code> writes a timestamped line to the file and an untimestamped one to stdout, which launchd captures to <code>launchd-stdout.log</code> / <code>launchd-stderr.log</code> in the same directory.</p>
   </section>
 
   <section id="section-4">
     <h2><a href="#section-4" class="heading-link"><span class="num">§ 04</span>The remote side</a></h2>
 
-    <h3>4.1 · Transport library (<code>bin/lib/oa.ts</code>)</h3>
+    <h3>4.1 · The command wrapper (<code>oa-wrapper.sh</code>)</h3>
+    <p>Remote commands are not separate scripts. A single POSIX <code>sh</code> file is installed under <strong>many names</strong> in <code>~/.local/bin/</code> (<code>ropen</code>, <code>rcopy</code>, <code>ra</code>, …) and dispatches on <code>basename "$0"</code>:</p>
+
+<pre><code class="language-bash">exec deno run --allow-read --allow-write --allow-run --allow-env --allow-net \
+  "$OA_DIR/src/cli/$CMD.ts" "$@"</code></pre>
+
+    <p>The <code>--allow-net</code> grant is deliberately unscoped: Deno ≥ 2.9 requires a net grant for Unix socket connects, but the scoped <code>unix:&lt;path&gt;</code> syntax is a parse error on older Deno, and remotes run mixed versions. The daemon's own plist <em>does</em> use the scoped form, since that machine's Deno version is known.</p>
+
+    <h3>4.2 · Transport library (<code>src/lib/oa.ts</code>)</h3>
     <p>Shared by every <code>r*</code> client. Central pieces:</p>
     <ul>
-      <li><strong>Identity resolution (<code>resolveHost</code>)</strong> — how the remote names itself to the daemon, used as the mount key:
-        <ol>
-          <li><code>OPEN_AGENT_HOST</code> env var, else</li>
-          <li><code>~/.config/open-agent/identity</code> file, else</li>
-          <li><code>hostname -s</code></li>
-        </ol>
-      </li>
-      <li><strong><code>send(message, timeoutSec)</code></strong> — the core client call:
-        <ol>
-          <li>If the Unix socket (<code>OPEN_AGENT_SOCK</code>, default <code>/tmp/open-agent.sock</code>) exists, try it with a 2s connect timeout.</li>
-          <li>On any failure, fall back to TCP (<code>OPEN_AGENT_TCP_HOST</code>/<code>_PORT</code>, default <code>127.0.0.1:19876</code>).</li>
-          <li>If both fail, throw a message listing what was tried.</li>
-        </ol>
-      </li>
-      <li><strong>Helpers</strong> — <code>requireSock()</code> (warn-only; TCP may still work), <code>fail()</code>, <code>checkResponse()</code>, <code>getStringField()</code>.</li>
+      <li><strong>Session detection (<code>isRemoteSession</code>)</strong> — true when <code>SSH_CONNECTION</code>, <code>SSH_TTY</code>, or <code>SSH_CLIENT</code> is set. Every client branches on this first.</li>
+      <li><strong>Identity resolution (<code>resolveHost</code>)</strong> — how the remote names itself to the daemon, used as the mount key: <code>OPEN_AGENT_HOST</code>, else <code>~/.config/open-agent/identity</code>, else the literal <code>"unknown"</code>. The value must match an SSH <code>Host</code> alias on the local Mac, since the daemon feeds it straight to <code>sshfs</code>.</li>
+      <li><strong>Socket path (<code>defaultSockPath</code>)</strong> — differs by side. On a remote the daemon is reachable only through the tunnel, which binds <code>/tmp/open-agent.sock</code>. Locally the daemon binds its own socket under <code>~/.local/share</code> and never listens on <code>/tmp</code>, so a <code>/tmp</code> socket on the local Mac is at best a leftover from an inbound forward.</li>
+      <li><strong><code>send(message, timeoutSec)</code></strong> — try the Unix socket (2s connect timeout), then fall back to TCP. Each transport's failure is reported separately; collapsing them into one generic message used to hide real causes (a dead daemon, a missing Deno permission) behind a guess about the tunnel.</li>
     </ul>
 
-    <p class="tldr">Dual-transport-with-fallback is what makes the same scripts work over plain OpenSSH (socket) <em>and</em> Tailscale SSH / iPad clients (TCP).</p>
+    <div class="note caveat">
+      <span class="note-label">Caveat · The TCP fallback is not unconditional</span>
+      <p><code>shouldTryTcp()</code> blocks it on a remote unless <code>OPEN_AGENT_TCP_HOST</code>/<code>_PORT</code> is explicitly set. The SSH config forwards the <em>socket</em>, not the port — so inside a remote session <code>127.0.0.1:19876</code> is not the personal Mac, it is whatever daemon runs on <em>this</em> machine. Falling back to it silently serves the request on the wrong host: <code>ropen</code> opens the file on the remote, <code>rcopy</code> writes to the remote clipboard, and the command exits 0 as if it had worked. Locally there is no ambiguity, so the fallback stays on.</p>
+    </div>
 
-    <h3>4.2 · The shell hook (<code>open-agent-hook.sh</code>)</h3>
+    <h3>4.3 · The shell hook (<code>open-agent-hook.sh</code>)</h3>
     <p>Sourced from the remote shell profile. It:</p>
     <ul>
       <li>Only activates when <code>$SSH_CONNECTION</code> is set (i.e., a real SSH session).</li>
-      <li>Computes the same host identity as <code>lib/oa.ts</code> and a unique <code>sessionId</code> (<code>$$-&lt;epoch&gt;</code>).</li>
+      <li>Computes a host identity and a unique <code>sessionId</code> (<code>$$-&lt;epoch&gt;</code>).</li>
       <li>Sends <code>connect</code> on shell start and traps <code>EXIT HUP TERM</code> to send <code>disconnect</code>. This is what drives the daemon's mount/unmount lifecycle.</li>
       <li>Aliases <code>open</code> → <code>ropen</code> and defines an <code>oa-status</code> function.</li>
       <li>Uses <code>socat</code> (or <code>nc</code>) to talk to the socket — bash-only, no Deno dependency, so it runs before any <code>r*</code> tool is invoked.</li>
     </ul>
 
-    <h3>4.3 · The client commands</h3>
-    <p>All are Deno scripts that build a message, call <code>send()</code>, and act on the response. Notable behaviors:</p>
+    <h3>4.4 · The client commands</h3>
+    <p>All are Deno scripts that check <code>isRemoteSession()</code>, build a message via <code>args.ts</code>, call <code>send()</code>, and act on the response. Notable behaviors:</p>
     <ul>
-      <li><strong><code>ropen</code></strong> — detects URLs (<code>open-url</code>) vs VS Code (<code>open-vscode</code>, by <code>-v</code> or app-name heuristics) vs plain files (<code>open</code>). If the agent is unreachable it <strong>falls back to the native <code>/usr/bin/open</code></strong> so it degrades gracefully when the tunnel dies.</li>
-      <li><strong><code>rop</code></strong> — 1Password proxy. <code>read</code> resolves a single <code>op://</code> ref; <code>run</code> parses one or more <code>--env-file</code>s plus the live environment, collects every <code>op://</code> value, resolves them in one <code>op-resolve</code> batch, then <code>exec</code>s the target command with the resolved env.</li>
-      <li><strong><code>rpush</code>/<code>rpull</code></strong> — file transfer through the SSHFS mount (push = remote→local Downloads; pull = local→remote).</li>
-      <li><strong><code>rcode</code> / <code>rtmux</code></strong> — <em>context-aware</em>: if <code>$SSH_CONNECTION</code> is set they delegate to the remote path (<code>ropen -v</code>), otherwise to the local <code>rproj</code>.</li>
+      <li><strong><code>ropen</code></strong> — detects URLs (<code>open-url</code>) vs VS Code (<code>open-vscode</code>, by <code>-v</code> or app-name heuristics) vs plain files (<code>open</code>). When it is <em>not</em> in an SSH session it runs native <code>open</code>/<code>code</code> directly. When it <em>is</em> remote and the agent is unreachable it <strong>fails loudly</strong>; it does not fall back to the remote's own <code>open</code>, because a remote-mount path opened on the remote just produces nonsense or a confusing "file not found".</li>
+      <li><strong><code>rop</code></strong> — 1Password proxy. Locally it execs the real <code>op</code> verbatim. Remotely, <code>read</code> resolves a single <code>op://</code> ref; <code>run</code> parses one or more <code>--env-file</code>s plus the live environment, collects every <code>op://</code> value, resolves them in one <code>op-resolve</code> batch, then runs the target command with the resolved env.</li>
+      <li><strong><code>rpush</code>/<code>rpull</code></strong> — file transfer through the SSHFS mount (push = remote→local <code>~/Downloads</code>; pull = local→remote).</li>
+      <li><strong><code>ra</code></strong> — admin and diagnostics; see <a href="#section-5">§ 5.1</a>.</li>
+      <li><strong><code>rcode</code> / <code>rtmux</code></strong> — <em>context-aware</em> wrappers: <code>rcode</code> delegates to <code>ropen -v</code> when remote and to <code>rproj code</code> when local; <code>rtmux</code> always delegates to <code>rproj tmux</code>.</li>
     </ul>
   </section>
 
   <section id="section-5">
-    <h2><a href="#section-5" class="heading-link"><span class="num">§ 05</span>Local-only tooling</a></h2>
-    <p>These never run on the remote host.</p>
+    <h2><a href="#section-5" class="heading-link"><span class="num">§ 05</span>Diagnostics &amp; local-only tooling</a></h2>
 
-    <h3><code>open-agent</code> (CLI)</h3>
-    <p>Manages the toolkit itself from the local Mac:</p>
+    <h3>5.1 · <code>ra</code> (admin CLI)</h3>
+    <p>Runs from <strong>either</strong> side — the transport layer figures out where the daemon lives, so the same code path serves a local Mac and a remote session.</p>
+
+    <table>
+      <thead><tr><th>Command</th><th>Behavior</th></tr></thead>
+      <tbody>
+        <tr><td><code>ra ping</code></td><td>Liveness probe with a tight 3s timeout</td></tr>
+        <tr><td><code>ra status</code></td><td>One-line summary: version + mount count</td></tr>
+        <tr><td><code>ra mounts</code></td><td>Table of hosts, mount points, session counts, pending unmounts</td></tr>
+        <tr><td><code>ra reset [host]</code></td><td>Tear down all mounts, or one, and purge their session state</td></tr>
+        <tr><td><code>ra doctor</code></td><td>Full diagnostic: client transport config, daemon reachability with latency, then a per-mount responsiveness probe</td></tr>
+      </tbody>
+    </table>
+
+    <p><code>ra doctor</code> prints the client-side transport configuration (socket path and whether it exists, TCP target, resolved host identity) <em>before</em> trying to reach the daemon, so it stays useful when the daemon is entirely unreachable.</p>
+
+    <h3>5.2 · <code>open-agent</code> (management CLI)</h3>
+    <p>Manages the toolkit itself, primarily from the local Mac:</p>
     <ul>
-      <li><code>setup-remote &lt;host|all&gt;</code> — reads <code>remote-hosts</code>, tars the <code>r*</code> scripts + <code>lib/oa.ts</code> + hook, and deploys them over SSH to <code>~/.local/bin</code> on each remote.</li>
+      <li><code>setup-remote &lt;host|all&gt;</code> — reads <code>remote-hosts</code>, builds a tarball of the remote subset of <code>src/</code> (all of <code>src/lib/</code>, the client CLIs, <code>args.ts</code>) plus the hook and wrapper, and deploys it over SSH to each remote. It installs one wrapper copy per client command, and <strong>removes wrappers for host-only commands</strong> (<code>rproj</code>, <code>rtmux</code>, <code>open-agent</code>) left over from an earlier full install — they would otherwise point at modules the remote subset omits and die with "Module not found".</li>
       <li><code>update</code> — fetches the latest GitHub release tarball and runs <code>install.sh --local</code>.</li>
-      <li><code>status</code> — sends <code>{"action":"status"}</code> to the daemon socket and pretty-prints mounts/sessions.</li>
+      <li><code>status</code> — queries the daemon. See <a href="#section-10">§ 10</a>; this subcommand is currently broken.</li>
       <li><code>version</code>.</li>
     </ul>
 
-    <h3><code>rproj</code> (project browser)</h3>
-    <p>The largest component. Discovers projects across multiple remote hosts and opens them via tmux, VS Code remote-SSH, or Finder (SSHFS).</p>
+    <h3>5.3 · <code>rproj</code> (project browser)</h3>
+    <p>The largest single component (~950 lines). Discovers projects across multiple remote hosts and opens them via tmux, VS Code remote-SSH, or Finder (SSHFS).</p>
     <ul>
       <li><strong>Config</strong> — <code>~/.config/open-agent/remote-hosts</code> (<code>alias|dir|label</code>, legacy <code>~/.config/rproj/*</code> auto-detected). A host can appear with multiple dirs.</li>
       <li><strong>Discovery</strong> — <code>ssh</code> into each host with <code>-o ControlPath=none</code> (so <code>ConnectTimeout</code> is honored even with a hung <code>ControlMaster</code>) and <code>find</code> the configured dirs. Parallel across hosts, 3–5s timeouts, offline hosts silently omitted.</li>
       <li><strong>Selection</strong> — an fzf picker grouped by label with tree connectors; fzf <code>--preview</code> shells back into <code>rproj _preview*</code> to show git status + contents over SSH.</li>
-      <li><strong>Resolution</strong> — <code>-p NAME</code> resolves a project by basename match (no SSH) or by probing candidate dirs; disambiguates multi-host matches with another fzf.</li>
-      <li><strong>Actions</strong> — <code>tmux</code> (ssh + <code>tc</code>), <code>code</code> (<code>code --remote</code>), <code>finder</code> (sends an <code>open</code> to the daemon via the socket), or an interactive action picker.</li>
+      <li><strong>Resolution</strong> — <code>-p NAME</code> resolves a project by basename match (no SSH) or by probing candidate dirs; supports <code>host:name</code> qualifiers and disambiguates multi-host matches with another fzf.</li>
+      <li><strong>Actions</strong> — <code>tmux</code> (ssh + <code>tc</code>), <code>code</code> (<code>code --remote</code>), <code>finder</code> (sends an <code>open</code> to the daemon), or an interactive action picker.</li>
       <li><strong>Alfred integration</strong> — <code>list --json</code> emits Alfred workflow JSON; <code>open</code> takes <code>host|path</code>.</li>
     </ul>
-    <p><code>rproj</code> talks to the daemon directly over the local Unix socket (not <code>lib/oa.ts</code>, since it always runs locally where the socket lives).</p>
+    <p>Its pure logic (argument parsing, host-qualifier splitting, fzf entry formatting, terminal restore sequences) lives in <code>src/lib/rproj_utils.ts</code> and is tested there.</p>
   </section>
 
   <section id="section-6">
     <h2><a href="#section-6" class="heading-link"><span class="num">§ 06</span>Installation &amp; lifecycle</a></h2>
 
-    <h3>Local install (<code>install.sh</code>)</h3>
-    <p>Two modes: <code>curl | bash</code> (downloads latest release tarball then re-execs <code>--local</code>), or <code>./install.sh --local</code> from a clone. The local mode:</p>
+    <h3>6.1 · Local install (<code>install.sh</code>)</h3>
+    <p>Two entry modes — <code>curl | bash</code> (downloads the latest release tarball, then re-execs <code>--local</code>) and <code>./install.sh --local</code> from a clone — and two install profiles:</p>
+
+    <table>
+      <thead><tr><th>Profile</th><th>Installs</th><th>Use</th></tr></thead>
+      <tbody>
+        <tr><td>Default</td><td>Client commands + <code>rproj</code>/<code>rtmux</code> + daemon + launchd job</td><td>The personal Mac</td></tr>
+        <tr><td><code>--no-daemon</code></td><td>Client commands only</td><td>A machine that is purely a client</td></tr>
+      </tbody>
+    </table>
+
+    <p>The local mode:</p>
     <ol>
-      <li>Checks prerequisites (deno, sshfs; warns on terminal-notifier).</li>
-      <li>Copies daemon → <code>~/.local/share/open-agent/</code>, <code>bin/*</code> → <code>~/.local/bin/</code>, <code>lib/oa.ts</code> → <code>~/.local/bin/lib/</code>, hook → <code>~/.local/share/open-agent/</code>.</li>
-      <li><code>sed</code>-substitutes <code>YOURUSER</code>/deno path in the plist → <code>~/Library/LaunchAgents/com.open-agent.daemon.plist</code>, then <code>launchctl bootout</code>/<code>bootstrap</code> (with a retry to dodge the bootout/bootstrap race).</li>
+      <li>Checks prerequisites (deno; plus sshfs and terminal-notifier when installing the daemon).</li>
+      <li>Removes pre-<code>src/</code> layout artifacts (<code>open-agent-daemon.ts</code>, <code>bin/lib/</code>).</li>
+      <li>Copies <code>src/</code> → <code>~/.local/share/open-agent/src/</code>, then installs <code>oa-wrapper.sh</code> under each command name in <code>~/.local/bin/</code>.</li>
+      <li>Under <code>--no-daemon</code>, removes any host-only wrappers (<code>rproj</code>, <code>rtmux</code>) a previous full install left behind, and warns if a launchd job is still registered — without tearing it down, since that is the operator's call.</li>
+      <li><code>sed</code>-substitutes <code>YOURUSER</code> and the deno path into the plist → <code>~/Library/LaunchAgents/</code>, then <code>launchctl bootout</code>/<code>bootstrap</code> (with a retry to dodge the bootout/bootstrap race).</li>
       <li>Verifies the socket is live and migrates legacy config.</li>
     </ol>
 
-    <h3>launchd service (<code>com.open-agent.daemon.plist</code>)</h3>
+    <h3>6.2 · launchd service (<code>com.open-agent.daemon.plist</code>)</h3>
     <ul>
-      <li><code>RunAtLoad</code> + <code>KeepAlive</code> on non-zero exit → the daemon stays up and restarts on crash.</li>
+      <li><code>RunAtLoad</code> + <code>KeepAlive</code> on non-zero exit → the daemon stays up and restarts on crash. <a href="#section-3">§ 3.2</a> explains why the daemon exits non-zero when its listeners die.</li>
       <li>Uses a <strong>mise shim</strong> for <code>deno</code> so the path survives Deno version upgrades.</li>
+      <li>Grants <code>--allow-net</code> scoped to exactly the Unix socket path and <code>127.0.0.1:19876</code>.</li>
       <li>Sets a <code>PATH</code> including <code>/opt/homebrew/bin</code> so <code>sshfs</code>, <code>op</code>, etc. are found.</li>
     </ul>
 
-    <h3>Releases (<code>.github/workflows/release.yml</code>)</h3>
-    <p>On a <code>v*</code> tag, builds a versioned tarball of daemon + plist + install.sh + hook + ssh_config + <code>bin/</code>, and publishes a GitHub release with auto-generated notes. <code>open-agent update</code> consumes exactly this tarball.</p>
+    <h3>6.3 · CI and releases</h3>
+    <p><code>ci.yml</code> runs on every push and PR: <code>shellcheck</code>, <code>deno fmt --check</code>, <code>deno lint</code>, <code>deno check src/</code>, <code>deno task test</code>. It runs on <code>ubuntu-latest</code>, so nothing in CI ever starts the daemon or touches a mount — the coverage that exists is unit coverage over injected dependencies.</p>
+    <p><code>release.yml</code> re-runs the same verification on a <code>v*</code> tag, then builds a tarball of <code>src/</code>, <code>deno.json</code>, <code>oa-wrapper.sh</code>, the plist, <code>install.sh</code>, the hook, and <code>ssh_config.example</code>, and publishes a GitHub release with auto-generated notes. <code>open-agent update</code> consumes exactly this tarball.</p>
   </section>
 
   <div class="ornament">§ § §</div>
@@ -1088,7 +1188,6 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
     <figure>
       <pre class="mermaid">sequenceDiagram
     participant U as You (remote shell)
-    participant H as hook (registered)
     participant R as ropen
     participant Oa as lib/oa.ts
     participant T as SSH tunnel
@@ -1097,12 +1196,14 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
     participant O as /usr/bin/open
 
     U->>R: ropen README.md
+    R->>R: isRemoteSession() → true
     R->>R: realPathSync → absolute
     R->>Oa: send(action open, host, remoteHome, path)
-    Oa->>T: connect socket /tmp/open-agent.sock (fallback TCP 19876)
+    Oa->>T: connect socket /tmp/open-agent.sock
     Oa->>D: JSON request + newline
-    D->>D: ensureMount(host) — already mounted (hook connected earlier)
-    D->>D: translatePath → ~/.remote-mounts/work/README.md
+    D->>D: verifyMountAndPath: ensureMount + stat
+    D->>M: stat ~/.remote-mounts/work/README.md
+    M-->>D: exists
     D->>O: open mountPath
     O-->>D: ok
     D-->>Oa: JSON response ok true, localPath
@@ -1110,6 +1211,8 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
     R-->>U: Opened: localPath</pre>
       <figcaption>The hook's earlier <code>connect</code> ensured the SSHFS mount was already up; the file's bytes are fetched by macOS <code>open</code> through that mount.</figcaption>
     </figure>
+
+    <p>Had the <code>stat</code> failed, <a href="#section-3">§ 3.4</a>'s disambiguation would have decided between <code>path_not_found</code> and a forced remount.</p>
   </section>
 
   <section id="section-8">
@@ -1119,20 +1222,24 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
       <thead><tr><th>File</th><th>Side</th><th>Purpose</th></tr></thead>
       <tbody>
         <tr><td><code>~/.config/open-agent/remote-hosts</code></td><td>local</td><td><code>alias|dir|label</code> rows for <code>rproj</code>/<code>setup-remote</code></td></tr>
-        <tr><td><code>~/.config/open-agent/identity</code></td><td>remote</td><td>Host identity (when not via env/hostname)</td></tr>
+        <tr><td><code>~/.config/open-agent/identity</code></td><td>remote</td><td>Host identity (when not via env)</td></tr>
+        <tr><td><code>~/.local/share/open-agent/src/</code></td><td>both</td><td>Installed source tree</td></tr>
         <tr><td><code>~/.local/share/open-agent/open-agent.sock</code></td><td>local</td><td>Unix socket</td></tr>
+        <tr><td><code>~/.local/share/open-agent/agent.log</code></td><td>local</td><td>Daemon log</td></tr>
+        <tr><td><code>~/.local/share/open-agent/launchd-std{out,err}.log</code></td><td>local</td><td>launchd-captured output</td></tr>
         <tr><td><code>~/.remote-mounts/&lt;host&gt;/</code></td><td>local</td><td>SSHFS mount points</td></tr>
         <tr><td><code>~/Library/LaunchAgents/com.open-agent.daemon.plist</code></td><td>local</td><td>launchd service</td></tr>
-        <tr><td><code>~/.local/bin/{r*,open-agent,rproj}</code></td><td>both</td><td>Installed scripts</td></tr>
+        <tr><td><code>~/.local/bin/{r*,ra,open-agent,rproj}</code></td><td>both</td><td>Wrapper copies</td></tr>
       </tbody>
     </table>
 
     <table>
       <thead><tr><th>Env var</th><th>Default</th><th>Side</th><th>Meaning</th></tr></thead>
       <tbody>
-        <tr><td><code>OPEN_AGENT_HOST</code></td><td>hostname</td><td>remote</td><td>Host identity</td></tr>
-        <tr><td><code>OPEN_AGENT_SOCK</code></td><td><code>/tmp/open-agent.sock</code></td><td>remote</td><td>Forwarded socket path</td></tr>
-        <tr><td><code>OPEN_AGENT_TCP_HOST</code> / <code>_PORT</code></td><td><code>127.0.0.1</code> / <code>19876</code></td><td>remote</td><td>TCP fallback target</td></tr>
+        <tr><td><code>OPEN_AGENT_HOST</code></td><td><code>unknown</code></td><td>remote</td><td>Host identity</td></tr>
+        <tr><td><code>OPEN_AGENT_SOCK</code></td><td><code>/tmp/open-agent.sock</code> remote, <code>~/.local/share/…</code> local</td><td>both</td><td>Socket path</td></tr>
+        <tr><td><code>OPEN_AGENT_TCP_HOST</code> / <code>_PORT</code></td><td><code>127.0.0.1</code> / <code>19876</code></td><td>both</td><td>TCP target; <strong>setting either also opts a remote into the TCP fallback</strong></td></tr>
+        <tr><td><code>OPEN_AGENT_DIR</code></td><td><code>~/.local/share/open-agent</code></td><td>both</td><td>Where <code>oa-wrapper.sh</code> finds <code>src/</code></td></tr>
       </tbody>
     </table>
 
@@ -1140,7 +1247,9 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
       <thead><tr><th>Daemon constant</th><th>Default</th><th>Meaning</th></tr></thead>
       <tbody>
         <tr><td><code>UNMOUNT_GRACE_MS</code></td><td><code>30000</code></td><td>Idle grace before unmount</td></tr>
-        <tr><td>sshfs <code>cache_timeout</code></td><td><code>120</code></td><td>Metadata cache seconds</td></tr>
+        <tr><td><code>MAX_CONSECUTIVE_ACCEPT_ERRORS</code></td><td><code>20</code></td><td>Accept failures before abandoning a listener</td></tr>
+        <tr><td><code>TCP_BIND_ATTEMPTS</code> / <code>TCP_BIND_RETRY_MS</code></td><td><code>3</code> / <code>500</code></td><td>TCP bind retry policy</td></tr>
+        <tr><td>sshfs <code>cache_timeout</code> / <code>attr_timeout</code></td><td><code>120</code></td><td>Metadata cache seconds</td></tr>
       </tbody>
     </table>
   </section>
@@ -1148,29 +1257,49 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
   <section id="section-9">
     <h2><a href="#section-9" class="heading-link"><span class="num">§ 09</span>Design principles &amp; constraints</a></h2>
     <ul>
-      <li><strong>Degraded operation by design.</strong> <code>ropen</code> falls back to native <code>open</code>; the transport falls back from socket → TCP. Nothing hard-fails if the agent is briefly unreachable.</li>
+      <li><strong>Fail loudly on the remote; degrade only where it is safe.</strong> Earlier versions fell back aggressively — <code>ropen</code> to native <code>open</code>, the transport to TCP unconditionally — and both were removed because they produced <em>plausible wrong results</em> instead of errors. The rule now: a fallback is acceptable only when it cannot serve the request on the wrong machine or against the wrong filesystem. Everything else surfaces a typed error with a recovery hint.</li>
+      <li><strong>Dual-mode commands.</strong> Every <code>r*</code> command runs the native local equivalent outside SSH, so one install works everywhere and muscle memory transfers.</li>
       <li><strong>Localhost-only, trust-the-tunnel security.</strong> No auth; safe only because the daemon binds loopback and all traffic rides SSH. (Network exposure would need the token-auth work sketched in <a href="./connectivity-plan.md">connectivity-plan.md</a>.)</li>
       <li><strong>Stateful mount, stateless connections.</strong> Each connection is one shot, but the daemon holds long-lived <code>MountState</code> keyed by host with session refcounts.</li>
       <li><strong>Per-host isolation.</strong> Host alias is the key everywhere; multiple remotes get independent mounts and session sets.</li>
+      <li><strong>Dependency injection at the effect boundary.</strong> Logic that could be pure is pure; logic that cannot takes its effects as an interface. This is what lets the suite run with <code>--allow-read --allow-env</code> and no sockets.</li>
       <li><strong>macOS-only daemon.</strong> The local side assumes <code>open</code>, <code>diskutil</code>, launchd, macFUSE. The remote side is portable (just Deno + socat/nc).</li>
-      <li><strong>No build step.</strong> Every script is run directly by Deno with declared permissions in its shebang; releases are plain tarballs.</li>
+      <li><strong>No build step.</strong> Every script is run directly by Deno; releases are plain tarballs.</li>
     </ul>
   </section>
 
   <section id="section-10">
-    <h2><a href="#section-10" class="heading-link"><span class="num">§ 10</span>Evolution / open work</a></h2>
-    <p>From <a href="./connectivity-plan.md">connectivity-plan.md</a> and <a href="./ipad-support-plan.md">ipad-support-plan.md</a>:</p>
+    <h2><a href="#section-10" class="heading-link"><span class="num">§ 10</span>Known gaps</a></h2>
+    <p>Defects and limitations known at the time of writing, kept here so the document does not read as an endorsement of everything above.</p>
     <ul>
-      <li><strong>Tailscale direct transport</strong> — client env vars already let a remote point at a Tailscale IP; the missing pieces are daemon-side binding beyond loopback and a shared-secret auth token (<code>{"token":"…"}</code> field) for non-localhost connections.</li>
-      <li><strong>iPad support</strong> — leans on the TCP transport (iPad SSH clients can't forward Unix sockets), hence the <code>127.0.0.1:19876</code> listener.</li>
-      <li><strong>Auth model</strong> — open question whether a shared token suffices or Tailscale device identity should be used for direct connections.</li>
+      <li><strong>Request size cap.</strong> <code>handleConnection()</code> performs a single <code>conn.read()</code> into an 8 KB buffer rather than reading to the newline delimiter, and the client reads one 64 KB buffer the same way. A request larger than the buffer — or one merely split across TCP segments — is truncated and surfaces as an opaque "Bad request". <code>rcopy</code> of a large clipboard hits this.</li>
+      <li><strong>Host identity diverges between hook and client.</strong> <code>open-agent-hook.sh</code> falls back to <code>hostname -s</code>; <code>src/lib/oa.ts</code> falls back to the literal <code>"unknown"</code>. On a remote with neither <code>OPEN_AGENT_HOST</code> nor an identity file, the hook and the <code>r*</code> commands register under different keys.</li>
+      <li><strong><code>open-agent status</code> is broken.</strong> It reads a top-level <code>sessions</code> key and a <code>path</code> field that <code>handleStatus</code> does not emit (sessions are nested under <code>mounts[host]</code>, the field is <code>mountPoint</code>), so it always reports zero sessions and unknown paths. <code>ra status</code> / <code>ra mounts</code> are correct; prefer them.</li>
+      <li><strong>Three transport implementations.</strong> <code>src/lib/oa.ts</code> is the real one; <code>open-agent.ts</code> and <code>rproj.ts</code> each hand-roll their own <code>Deno.connect</code> to the socket, bypassing the error-code handling and the TCP-safety guard.</li>
+      <li><strong><code>isMounted</code> substring-matches <code>mount(8)</code> output</strong>, so host <code>work</code> matches a mount line for <code>work2</code>.</li>
+      <li><strong>No persisted mount state.</strong> The mount table is in memory only. A daemon restart loses it while the SSHFS mounts survive, so the next request mounts again over the same mount point.</li>
+      <li><strong>CLI orchestration is untested.</strong> Files in <code>src/cli/</code> execute at import and call <code>Deno.exit</code>, so they cannot be imported by a test. Their extracted logic (<code>args.ts</code>, <code>rproj_utils.ts</code>) is well covered; the wiring around it is not, which is how the <code>open-agent status</code> defect survived.</li>
+      <li><strong><code>VERSION</code> is duplicated</strong> in <code>src/daemon/main.ts</code> and <code>src/cli/open-agent.ts</code> and must be bumped in both.</li>
+    </ul>
+  </section>
+
+  <section id="section-11">
+    <h2><a href="#section-11" class="heading-link"><span class="num">§ 11</span>Evolution / open work</a></h2>
+    <p>From <code>TODO.md</code>, <a href="./connectivity-plan.md">connectivity-plan.md</a>, and <a href="./ipad-support-plan.md">ipad-support-plan.md</a>:</p>
+    <ul>
+      <li><strong>Persistent mount state</strong> — write the mount table to <code>$AGENT_DIR/mounts.json</code> on change and reconcile against <code>mount(8)</code> at startup, so a restart neither double-mounts nor underreports.</li>
+      <li><strong><code>ra logs [-f]</code></strong> — tail the launchd logs so users need not remember the path. No new daemon action required.</li>
+      <li><strong>Opt-in mount heartbeat</strong> — periodically probe each mount instead of waiting for a request to discover staleness. Deliberately off by default: background heartbeats mask real problems and create spurious filesystem activity.</li>
+      <li><strong>Tailscale direct transport</strong> — client env vars already let a remote point at a Tailscale IP; the missing pieces are daemon-side binding beyond loopback, origin-awareness in the daemon (see <a href="#section-3">§ 3.1</a>), and an auth token (<code>{"token":"…"}</code>) required for non-localhost connections.</li>
+      <li><strong>iPad support</strong> — leans on the TCP transport, since iPad SSH clients cannot forward Unix sockets. The unsolved problem is keeping a listener alive under iPadOS background suspension.</li>
+      <li><strong>Auth model</strong> — open question whether a shared token suffices or Tailscale device identity should back direct connections.</li>
     </ul>
   </section>
 
   <footer>
     <span>open-agent · Architecture</span>
     <span>Engineering Reference</span>
-    <span>2026·07·08</span>
+    <span>2026·07·26</span>
   </footer>
 
 </div>
