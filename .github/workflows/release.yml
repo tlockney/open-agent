@@ -34,8 +34,23 @@ jobs:
       - name: Run tests
         run: deno task test
 
+  # The daemon is the artifact being published, so exercise it for real
+  # before a tag ships.
+  integration:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+          cache: true
+
+      - name: Run integration tests
+        run: deno task test:integration
+
   release:
-    needs: verify
+    needs: [verify, integration]
     runs-on: ubuntu-latest
     permissions:
       contents: write

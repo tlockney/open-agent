@@ -34,3 +34,18 @@ jobs:
 
       - name: Run tests
         run: deno task test
+
+  # The daemon is macOS-only, and the unit suite deliberately never opens a
+  # socket. This job is the only thing that runs the real binary end to end.
+  integration:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+          cache: true
+
+      - name: Run integration tests
+        run: deno task test:integration
