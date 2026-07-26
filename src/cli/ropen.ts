@@ -16,8 +16,8 @@ import {
   fail,
   formatErrorMessage,
   HOME,
-  HOST,
   isRemoteSession,
+  requireHost,
   send,
 } from "../lib/oa.ts";
 
@@ -91,7 +91,13 @@ if (!isRemoteSession()) {
 }
 
 // Build message (URL → open-url; VS Code app name or -v → open-vscode; etc.)
-const msg = buildOpenMessage({ target, app, vscode, host: HOST, home: HOME });
+const msg = buildOpenMessage({
+  target,
+  app,
+  vscode,
+  host: requireHost(),
+  home: HOME,
+});
 
 // Send to agent (tries Unix socket, then TCP)
 let response: import("../lib/messages.ts").Response;

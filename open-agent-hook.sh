@@ -8,14 +8,20 @@
 [[ -z "$SSH_CONNECTION" ]] && return 0
 
 _OA_SOCK="${OPEN_AGENT_SOCK:-/tmp/open-agent.sock}"
-# Resolve host identity: env var → identity file → hostname fallback.
+# Resolve host identity: env var → identity file → unresolved.
 # Must be unique per remote and match the SSH Host alias on the local machine.
+#
+# There is deliberately no `hostname -s` fallback. The daemon hands this
+# value straight to sshfs as an SSH destination, and a remote's own hostname
+# usually is not the alias the local Mac knows it by — so guessing mounts the
+# wrong host or fails obscurely. src/lib/oa.ts resolves identity the same way;
+# the two must agree or the hook and the r* commands register different keys.
 if [[ -n "${OPEN_AGENT_HOST:-}" ]]; then
     _OA_HOST="$OPEN_AGENT_HOST"
-elif [[ -f "$HOME/.config/open-agent/identity" ]]; then
-    _OA_HOST="$(cat "$HOME/.config/open-agent/identity" 2>/dev/null)"
+elif [[ -r "$HOME/.config/open-agent/identity" ]]; then
+    _OA_HOST="$(tr -d '[:space:]' < "$HOME/.config/open-agent/identity" 2>/dev/null)"
 else
-    _OA_HOST="$(hostname -s 2>/dev/null || echo unknown)"
+    _OA_HOST=""
 fi
 _OA_SID="$$-$(date +%s)"
 
@@ -38,6 +44,16 @@ _oa_json_escape() {
 
 # Register this session
 if [[ -S "$_OA_SOCK" ]]; then
+    # Only complain when the agent is actually reachable — this file gets
+    # sourced on hosts with no forwarded socket, and warning there would be
+    # noise on every shell.
+    if [[ -z "$_OA_HOST" ]]; then
+        echo "open-agent: cannot determine this machine's identity — set OPEN_AGENT_HOST," >&2
+        echo "  or write the name to ~/.config/open-agent/identity. It must match the SSH" >&2
+        echo "  Host alias the local Mac uses for this machine. Session not registered." >&2
+        return 0
+    fi
+
     _OA_HOST_ESC=$(_oa_json_escape "$_OA_HOST")
     _OA_HOME_ESC=$(_oa_json_escape "$HOME")
     _OA_SID_ESC=$(_oa_json_escape "$_OA_SID")

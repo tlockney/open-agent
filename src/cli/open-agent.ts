@@ -5,7 +5,6 @@
 // Subcommands:
 //   setup-remote <host|all>   Deploy r* scripts and hook to remote host(s)
 //   update                    Fetch and install latest release from GitHub
-//   status                    Query the local daemon status
 //   version                   Print version
 //   help                      Show this help
 
@@ -26,7 +25,6 @@ const XDG_CONFIG = Deno.env.get("XDG_CONFIG_HOME") ?? `${HOME}/.config`;
 const OA_CONFIG_DIR = `${XDG_CONFIG}/open-agent`;
 const LEGACY_HOSTS_FILE = `${XDG_CONFIG}/rproj/hosts`;
 const HOSTS_FILE = `${OA_CONFIG_DIR}/remote-hosts`;
-const AGENT_SOCK = `${HOME}/.local/share/open-agent/open-agent.sock`;
 
 // Resolve SCRIPT_DIR — the directory containing this script
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
@@ -83,28 +81,6 @@ async function run(
     };
   } catch {
     return { success: false, stdout: "", stderr: "command failed", code: 1 };
-  }
-}
-
-async function agentSend(message: string): Promise<Record<string, unknown>> {
-  let conn: Deno.UnixConn;
-  try {
-    conn = await Deno.connect({ transport: "unix", path: AGENT_SOCK });
-  } catch {
-    throw new Error(
-      `Agent socket not found at ${AGENT_SOCK}\n  Is open-agent running? Check: launchctl list | grep open-agent`,
-    );
-  }
-  try {
-    await conn.write(new TextEncoder().encode(message + "\n"));
-    const buf = new Uint8Array(65536);
-    const n = await conn.read(buf);
-    if (!n) throw new Error("No response from agent");
-    return JSON.parse(
-      new TextDecoder().decode(buf.subarray(0, n)).trim(),
-    ) as Record<string, unknown>;
-  } finally {
-    conn.close();
   }
 }
 
@@ -390,29 +366,6 @@ async function cmdUpdate(): Promise<void> {
   info("Update complete");
 }
 
-async function cmdStatus(): Promise<void> {
-  const response = await agentSend('{"action":"status"}');
-
-  console.log("Agent: running");
-
-  const sessions = (response.sessions ?? {}) as Record<string, unknown>;
-  const mounts = (response.mounts ?? {}) as Record<string, unknown>;
-
-  console.log(`Sessions: ${Object.keys(sessions).length} active`);
-  for (const [host, sids] of Object.entries(sessions)) {
-    const count = Array.isArray(sids) ? sids.length : sids;
-    console.log(`  ${host}: ${count} session(s)`);
-  }
-
-  console.log(`Mounts: ${Object.keys(mounts).length} active`);
-  for (const [host, mInfo] of Object.entries(mounts)) {
-    const mountPath = typeof mInfo === "string"
-      ? mInfo
-      : (mInfo as Record<string, unknown>)?.path ?? "unknown";
-    console.log(`  ${host}: ${mountPath}`);
-  }
-}
-
 function cmdVersion(): void {
   console.log(`open-agent ${VERSION}`);
 }
@@ -423,7 +376,6 @@ function showHelp(): void {
 Commands:
     setup-remote <host|all>   Deploy r* scripts and hook to remote host(s)
     update                    Fetch and install latest release from GitHub
-    status                    Query the local daemon status
     version                   Print version
     help                      Show this help
 
@@ -434,7 +386,6 @@ Config:
 Examples:
     open-agent setup-remote workmbp     # Deploy to a single host
     open-agent setup-remote all         # Deploy to all configured hosts
-    open-agent status                   # Check daemon status
     open-agent update                   # Update to latest release`);
 }
 
@@ -456,7 +407,10 @@ async function main(): Promise<void> {
       await cmdUpdate();
       break;
     case "status":
-      await cmdStatus();
+      fail(
+        "'open-agent status' has been removed — use 'ra status' (summary),\n" +
+          "  'ra mounts' (per-mount detail), or 'ra doctor' (full diagnostic).",
+      );
       break;
     case "version":
       cmdVersion();

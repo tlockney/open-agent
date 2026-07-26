@@ -5,9 +5,49 @@ import {
   FORWARDED_SOCK,
   getStringField,
   isRemoteSession,
+  resolveHostIdentity,
   shouldTryTcp,
+  UNRESOLVED_HOST,
 } from "./oa.ts";
 import type { OkResponse } from "./messages.ts";
+
+// --- resolveHostIdentity ---
+//
+// The hook (open-agent-hook.sh) resolves identity with the same precedence.
+// If these two ever diverge again, the hook registers a session under one
+// host key while the r* commands send another, and mounts never line up.
+
+Deno.test("resolveHostIdentity: env var wins over the identity file", () => {
+  assertEquals(resolveHostIdentity("fromenv", "fromfile"), "fromenv");
+});
+
+Deno.test("resolveHostIdentity: falls back to the identity file", () => {
+  assertEquals(resolveHostIdentity(undefined, "workmbp"), "workmbp");
+});
+
+Deno.test("resolveHostIdentity: trims surrounding whitespace", () => {
+  assertEquals(resolveHostIdentity(undefined, "  workmbp\n"), "workmbp");
+  assertEquals(resolveHostIdentity("  workmbp \n", undefined), "workmbp");
+});
+
+Deno.test("resolveHostIdentity: blank sources count as absent", () => {
+  // An empty identity file must not register a session under "".
+  assertEquals(resolveHostIdentity("", ""), UNRESOLVED_HOST);
+  assertEquals(resolveHostIdentity("   ", "\n\t "), UNRESOLVED_HOST);
+  assertEquals(resolveHostIdentity(undefined, undefined), UNRESOLVED_HOST);
+});
+
+Deno.test("resolveHostIdentity: skips a blank env var for a real file", () => {
+  assertEquals(resolveHostIdentity("  ", "workmbp"), "workmbp");
+});
+
+Deno.test("resolveHostIdentity: never guesses from the system hostname", () => {
+  // Deliberate: the value is used verbatim as an SSH destination, so a
+  // guess mounts the wrong host instead of failing.
+  const resolved = resolveHostIdentity(undefined, undefined);
+  assertEquals(resolved, UNRESOLVED_HOST);
+  assertEquals(resolved, "unknown");
+});
 
 // --- getStringField ---
 

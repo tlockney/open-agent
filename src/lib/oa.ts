@@ -6,6 +6,7 @@
 
 import { existsSync } from "jsr:@std/fs@1/exists";
 import type { ErrorObject, Message, OkResponse, Response } from "./messages.ts";
+import { MAX_MESSAGE_BYTES, readMessage, writeMessage } from "./framing.ts";
 
 export const HOME = Deno.env.get("HOME") ?? "";
 
@@ -57,21 +58,64 @@ export function shouldTryTcp(remote: boolean, tcpConfigured: boolean): boolean {
 const TCP_CONFIGURED = Boolean(
   Deno.env.get("OPEN_AGENT_TCP_HOST") ?? Deno.env.get("OPEN_AGENT_TCP_PORT"),
 );
-// Resolve host identity: env var → identity file → hostname fallback
-function resolveHost(): string {
-  const envHost = Deno.env.get("OPEN_AGENT_HOST");
-  if (envHost) return envHost;
+/**
+ * Sentinel for "this machine has no configured identity".
+ *
+ * Deliberately not `hostname -s`. The identity is used verbatim as an SSH
+ * destination by the daemon, so it has to match the `Host` alias on the
+ * local Mac — which a remote's own hostname usually does not. Guessing
+ * produces a plausible-looking mount against the wrong host (or a baffling
+ * sshfs error); an explicit sentinel lets the CLIs fail with instructions.
+ * `open-agent-hook.sh` resolves identity the same way and refuses to
+ * register a session when it comes back unresolved.
+ */
+export const UNRESOLVED_HOST = "unknown";
 
+/** Guidance shown whenever the identity cannot be resolved. */
+export const HOST_IDENTITY_HELP =
+  "set OPEN_AGENT_HOST, or write the name to ~/.config/open-agent/identity.\n" +
+  "  It must match the SSH Host alias the local Mac uses for this machine.";
+
+/**
+ * Pure identity resolution: env var → identity file → unresolved.
+ * Blank and whitespace-only values count as absent, so an empty identity
+ * file cannot register a session under the empty-string host.
+ */
+export function resolveHostIdentity(
+  envHost: string | undefined,
+  identityFileContents: string | undefined,
+): string {
+  if (envHost?.trim()) return envHost.trim();
+  if (identityFileContents?.trim()) return identityFileContents.trim();
+  return UNRESOLVED_HOST;
+}
+
+function resolveHost(): string {
   const identityPath = `${
     Deno.env.get("HOME") ?? ""
   }/.config/open-agent/identity`;
+  let contents: string | undefined;
   try {
-    return Deno.readTextFileSync(identityPath).trim();
+    contents = Deno.readTextFileSync(identityPath);
   } catch { /* file doesn't exist */ }
 
-  return "unknown";
+  return resolveHostIdentity(Deno.env.get("OPEN_AGENT_HOST"), contents);
 }
 export const HOST = resolveHost();
+
+/**
+ * Return the host identity, or exit with instructions if it is unresolved.
+ * Call this from any command that sends a host-bearing message — without it
+ * the daemon is asked to mount a host literally named "unknown".
+ */
+export function requireHost(host: string = HOST): string {
+  if (host === UNRESOLVED_HOST) {
+    fail(
+      `cannot determine this machine's identity — ${HOST_IDENTITY_HELP}`,
+    );
+  }
+  return host;
+}
 
 /**
  * True when running inside an SSH session — i.e. on the remote machine,
@@ -147,17 +191,20 @@ async function sendVia(
 ): Promise<Response> {
   const conn = await connectWithTimeout(opts, CONNECT_TIMEOUT_MS);
   try {
-    const payload = JSON.stringify(message) + "\n";
-    await conn.write(new TextEncoder().encode(payload));
+    await writeMessage(conn, JSON.stringify(message));
 
-    const buf = new Uint8Array(65536);
+    // Read to the newline rather than once into a fixed buffer: a large
+    // `rpaste` response arrives in several reads, and taking only the first
+    // truncated it into a JSON parse error.
     const timer = setTimeout(() => conn.close(), timeoutSec * 1000);
-    const n = await conn.read(buf);
-    clearTimeout(timer);
-    if (!n) throw new Error("no response from agent");
-    return JSON.parse(
-      new TextDecoder().decode(buf.subarray(0, n)).trim(),
-    ) as Response;
+    let raw: string;
+    try {
+      raw = (await readMessage(conn)).trim();
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!raw) throw new Error("no response from agent");
+    return JSON.parse(raw) as Response;
   } finally {
     try {
       conn.close();
@@ -173,6 +220,18 @@ export async function send(
   message: Message,
   timeoutSec = 10,
 ): Promise<Response> {
+  // Check the size here rather than discovering it mid-write. The daemon
+  // refuses an oversized request and closes at once — correct, but it leaves
+  // the client writing into a closed socket and reporting "Broken pipe",
+  // which says nothing about what actually went wrong.
+  const encoded = new TextEncoder().encode(JSON.stringify(message)).length;
+  if (encoded > MAX_MESSAGE_BYTES) {
+    throw new Error(
+      `request is ${encoded} bytes, over the ${MAX_MESSAGE_BYTES}-byte limit ` +
+        `the agent accepts`,
+    );
+  }
+
   // Each transport reports why it failed. Collapsing them into one generic
   // message hid the real causes — a dead daemon, a missing Deno permission —
   // behind a blanket "the SSH tunnel died" guess.
