@@ -87,6 +87,11 @@ install.sh                  # Installer (curl|sh, --local, --no-daemon)
 ssh_config.example          # SSH RemoteForward reference
 deno.json                   # Tasks (test/check/lint/fmt), strict TS, lint rules
 
+integration/                # End-to-end suite: boots a real daemon
+├── harness.ts              # Scratch-HOME daemon, raw socket + CLI drivers
+├── protocol_test.ts        # Framing, error paths, accept-loop resilience
+└── cli_test.ts             # r* commands driven as subprocesses
+
 docs/
 ├── architecture.md         # This file
 ├── architecture.html       # Rendered twin of this file
@@ -114,6 +119,14 @@ because it is what makes the project testable without sockets or mounts:
 `*_test.ts` files sit next to their subjects. `deno task test` runs them with
 only `--allow-read --allow-env`, which is possible precisely because nothing
 under test touches the network or spawns processes.
+
+That restriction is also the limit of what unit tests can see, so `integration/`
+covers the rest: it starts the real daemon against a scratch `HOME` and drives
+it over a real socket, both directly and through the `r*` commands as
+subprocesses. `deno task test:integration` runs it; the default task skips it.
+Two shipped defects motivated it — `open-agent status` reading response fields
+the daemon never emitted, and a partial-write bug that truncated large payloads
+— and both are now covered.
 
 ---
 
@@ -493,12 +506,13 @@ The local mode:
 
 ### 6.3 CI and releases
 
-`.github/workflows/ci.yml` runs on every push and PR: `shellcheck`,
-`deno fmt --check`, `deno lint`, `deno check src/`, `deno task test`. It runs on
-`ubuntu-latest`, so nothing in CI ever starts the daemon or touches a mount —
-the coverage that exists is unit coverage over injected dependencies.
+`.github/workflows/ci.yml` runs on every push and PR in two jobs. `check-and-test`
+runs `shellcheck`, `deno fmt --check`, `deno lint`, `deno check`, and the unit
+suite on `ubuntu-latest`. `integration` runs `deno task test:integration` on
+`macos-latest` — the only place the real daemon is started, since it needs
+macOS. `release.yml` gates publishing on both.
 
-`.github/workflows/release.yml` re-runs the same verification on a `v*` tag,
+`release.yml` re-runs the same verification on a `v*` tag,
 then builds a tarball of `src/`, `deno.json`, `oa-wrapper.sh`, the plist,
 `install.sh`, the hook, and `ssh_config.example`, and publishes a GitHub release
 with auto-generated notes. `open-agent update` consumes exactly this tarball.
@@ -607,15 +621,25 @@ does not read as an endorsement of everything above.
   `rproj.ts` still opens its own `Deno.connect` to the socket, bypassing the
   error-code handling and the newline framing. It is the last of what were
   three separate transport implementations.
+- **A burst of aborted connections can take the daemon down.** macOS returns
+  `EINVAL` from `accept()` when a client closes between `connect()` and
+  `accept()`, and `MAX_CONSECUTIVE_ACCEPT_ERRORS` (20) of those in a row makes
+  the loop abandon the listener. The counter resets on any successful accept,
+  so this needs 20 consecutive aborts with nothing in between — but when the
+  TCP listener failed to bind (the normal case on a machine that is also a
+  remote) the Unix listener is the only one, so abandoning it exits the daemon.
+  launchd restarts it, but in-memory mount and session state is lost. Found by
+  the integration suite; the fix is a policy decision, so the suite stays under
+  the threshold rather than pinning current behaviour.
 - **`isMounted` substring-matches `mount(8)` output**, so host `work` matches a
   mount line for `work2`.
 - **No persisted mount state.** The mount table is in memory only. A daemon
   restart loses it while the SSHFS mounts survive, so the next request mounts
   again over the same mount point.
-- **CLI orchestration is untested.** Files in `src/cli/` execute at import and
-  call `Deno.exit`, so they cannot be imported by a test. Their extracted logic
-  (`args.ts`, `rproj_utils.ts`) is well covered; the wiring around it is not,
-  which is how the `open-agent status` defect survived.
+- **`src/cli/` is still not unit-testable.** Those files execute at import and
+  call `Deno.exit`, so they cannot be imported directly. `integration/` now
+  drives them as subprocesses, which covers the wiring end to end, but a
+  `main(argv, deps)` refactor would still allow cheaper focused tests.
 - **`VERSION` is duplicated** in `src/daemon/main.ts` and `src/cli/open-agent.ts`
   and must be bumped in both.
 

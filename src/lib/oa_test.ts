@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1";
+import { assertEquals, assertRejects } from "jsr:@std/assert@1";
 import {
   defaultSockPath,
   formatErrorMessage,
@@ -6,10 +6,12 @@ import {
   getStringField,
   isRemoteSession,
   resolveHostIdentity,
+  send,
   shouldTryTcp,
   UNRESOLVED_HOST,
 } from "./oa.ts";
 import type { OkResponse } from "./messages.ts";
+import { MAX_MESSAGE_BYTES } from "./framing.ts";
 
 // --- resolveHostIdentity ---
 //
@@ -39,6 +41,23 @@ Deno.test("resolveHostIdentity: blank sources count as absent", () => {
 
 Deno.test("resolveHostIdentity: skips a blank env var for a real file", () => {
   assertEquals(resolveHostIdentity("  ", "workmbp"), "workmbp");
+});
+
+// --- send() size guard ---
+
+Deno.test("send: refuses an over-cap message before opening a connection", async () => {
+  // The guard runs before any I/O, so this needs no daemon and no net
+  // permission. Without it the daemon closes mid-upload and the caller
+  // reports "Broken pipe", which explains nothing.
+  await assertRejects(
+    () =>
+      send({
+        action: "copy",
+        content: "x".repeat(MAX_MESSAGE_BYTES + 1_000),
+      }),
+    Error,
+    "over the",
+  );
 });
 
 Deno.test("resolveHostIdentity: never guesses from the system hostname", () => {
