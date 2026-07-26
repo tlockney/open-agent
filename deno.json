@@ -7,7 +7,7 @@
     "fmt:check": "deno fmt --check"
   },
   "fmt": {
-    "exclude": ["**/*.md"]
+    "exclude": ["**/*.md", "**/*.html"]
   },
   "lint": {
     "rules": {
