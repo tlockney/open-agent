@@ -153,7 +153,6 @@ open-agent/
 # Manage the toolkit
 open-agent setup-remote workmbp   # Deploy scripts to a single remote
 open-agent setup-remote all       # Deploy to all configured hosts
-open-agent status                 # Check daemon status
 open-agent update                 # Update to latest GitHub release
 open-agent version                # Print version
 ```
@@ -218,8 +217,6 @@ rproj tmux myproject          # direct tmux session
 rproj code                    # interactive VS Code selection
 rproj finder                  # interactive Finder via SSHFS
 
-# Check agent status
-rproj status
 ```
 
 ### Host-qualified project names
@@ -265,7 +262,7 @@ Legacy config at `~/.config/rproj/hosts` is auto-detected with a warning.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPEN_AGENT_HOST` | hostname fallback | SSH config Host alias for this remote machine |
+| `OPEN_AGENT_HOST` | *(unset — see below)* | SSH config Host alias for this remote machine |
 | `OPEN_AGENT_SOCK` | `/tmp/open-agent.sock` on a remote, `~/.local/share/open-agent/open-agent.sock` locally | Path to the daemon socket |
 | `OPEN_AGENT_TCP_HOST` | `127.0.0.1` | TCP fallback host. Setting it also opts a remote *into* the TCP fallback (see below) |
 | `OPEN_AGENT_TCP_PORT` | `19876` | TCP fallback port. Same opt-in effect |
@@ -279,7 +276,14 @@ and the command exits 0 as though it worked. So on a remote the fallback is
 skipped unless you set `OPEN_AGENT_TCP_HOST` or `OPEN_AGENT_TCP_PORT`, which
 declares that you really did forward a TCP port to the daemon.
 
-Host identity is resolved in order: `OPEN_AGENT_HOST` env var, then `~/.config/open-agent/identity` file, then `hostname -s`.
+Host identity is resolved in order: `OPEN_AGENT_HOST` env var, then
+`~/.config/open-agent/identity`. There is deliberately **no `hostname -s`
+fallback**: the daemon hands this value straight to `sshfs` as an SSH
+destination, and a remote's own hostname usually is not the `Host` alias your
+Mac knows it by — so guessing mounts the wrong host instead of failing. With
+neither source set, the `r*` commands exit with instructions and the shell hook
+declines to register the session rather than registering it under a name that
+cannot work.
 
 **Agent constants (in `src/daemon/main.ts`):**
 
