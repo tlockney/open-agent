@@ -13,20 +13,6 @@ path.
 - CLI shape: `ra logs` prints last N lines, `ra logs -f` streams.
 - Implementation can shell out to `tail`; no new daemon action needed.
 
-## Persistent on-disk mount state
-
-Currently `MountManager` holds the mount table in memory only. If the
-daemon crashes or launchd restarts it, the in-memory record is lost
-even though the underlying SSHFS mounts may still be live. The daemon
-then double-mounts on the next request, and `ra mounts` underreports.
-
-- Persist mount metadata to `$AGENT_DIR/mounts.json` on every
-  add/remove.
-- On daemon startup, load the file and reconcile with the actual
-  `mount(8)` table: drop entries whose mount points are no longer
-  present, keep the rest.
-- Lets `ra mounts` and `ra doctor` show the truth across restarts.
-
 ## Optional opt-in background heartbeat
 
 The current self-healing is request-driven (covered by step 3 of the

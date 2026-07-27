@@ -67,6 +67,7 @@ src/
 │   ├── framing.ts          # readMessage()/writeMessage() — newline framing
 │   ├── oa.ts               # Client transport: send(), host identity, error render
 │   ├── path_utils.ts       # translatePath() — remote path → mount path
+│   ├── version.ts          # VERSION — single source for daemon and CLI
 │   └── rproj_utils.ts      # Pure helpers for rproj (parsing, fzf formatting)
 └── cli/
     ├── args.ts             # Pure argument parsing + message building, all CLIs
@@ -90,7 +91,8 @@ deno.json                   # Tasks (test/check/lint/fmt), strict TS, lint rules
 integration/                # End-to-end suite: boots a real daemon
 ├── harness.ts              # Scratch-HOME daemon, raw socket + CLI drivers
 ├── protocol_test.ts        # Framing, error paths, accept-loop resilience
-└── cli_test.ts             # r* commands driven as subprocesses
+├── cli_test.ts             # r* commands driven as subprocesses
+└── state_test.ts           # Mount-table recovery across a restart
 
 docs/
 ├── architecture.md         # This file
@@ -280,8 +282,10 @@ Key implementation details:
 - **Per-host serialization (`mountLocks`)** — `ensureMount()` chains on a promise
   keyed by host so concurrent requests never spawn parallel `sshfs` processes.
   The chain uses `.catch()` shunts so one failed mount doesn't block later ones.
-- **Health check** — `isMountResponsive()` first checks the `mount(8)` table,
-  then runs `stat` with a 3 s `AbortSignal` timeout. A hung FUSE mount would
+- **Health check** — `isMountResponsive()` first checks the `mount(8)` table
+  (parsed by `parseMountPoints()`, which compares whole paths — a substring
+  search once let host `work` match the line belonging to `work2`), then runs
+  `stat` with a 3 s `AbortSignal` timeout. A hung FUSE mount would
   otherwise block indefinitely.
 - **Stale recovery** — if the mount exists but is unresponsive, `forceUnmount()`
   (plain `umount`, then macOS `diskutil unmount force`) and remount.
@@ -298,8 +302,25 @@ Key implementation details:
 (`cache=yes`, `cache_timeout=120`, `attr_timeout=120`) since slightly-stale
 attributes are fine for opens.
 
-The mount table lives **in memory only**. See §10 for what that costs across a
-daemon restart.
+**Persistence and recovery.** The table is mirrored to
+`$AGENT_DIR/mounts.json` on every add and removal, and `restore()` rebuilds it
+at startup. Recovery is not a blind reload: each persisted entry is checked
+against the live `mount(8)` table and dropped if its mount point is gone, so a
+record can never resurrect a mount that no longer exists. Without this a
+restart lost the table while the SSHFS mounts themselves survived, and the next
+request stacked a second mount on the same mount point while `ra mounts`
+reported nothing.
+
+Sessions are deliberately **not** persisted — the shells that owned those ids
+did not survive the restart either. A recovered mount therefore carries no
+sessions, so nothing schedules its unmount and it lingers until a session
+connects and disconnects normally, or `ra reset` clears it. That is the
+conservative side to err on: tearing down a mount a live session is still using
+would be worse than leaving one to be reclaimed.
+
+A write failure is logged and swallowed rather than failing the operation that
+triggered it — losing the file costs one restart's worth of recovery, whereas
+failing the mount costs the user their command.
 
 ### 3.6 Logging
 
@@ -563,6 +584,7 @@ remount.
 | `~/.local/share/open-agent/src/` | both | Installed source tree |
 | `~/.local/share/open-agent/open-agent.sock` | local | Unix socket |
 | `~/.local/share/open-agent/agent.log` | local | Daemon log |
+| `~/.local/share/open-agent/mounts.json` | local | Mount table, reconciled at startup |
 | `~/.local/share/open-agent/launchd-std{out,err}.log` | local | launchd-captured output |
 | `~/.remote-mounts/<host>/` | local | SSHFS mount points |
 | `~/Library/LaunchAgents/com.open-agent.daemon.plist` | local | launchd service |
@@ -631,17 +653,10 @@ does not read as an endorsement of everything above.
   launchd restarts it, but in-memory mount and session state is lost. Found by
   the integration suite; the fix is a policy decision, so the suite stays under
   the threshold rather than pinning current behaviour.
-- **`isMounted` substring-matches `mount(8)` output**, so host `work` matches a
-  mount line for `work2`.
-- **No persisted mount state.** The mount table is in memory only. A daemon
-  restart loses it while the SSHFS mounts survive, so the next request mounts
-  again over the same mount point.
 - **`src/cli/` is still not unit-testable.** Those files execute at import and
   call `Deno.exit`, so they cannot be imported directly. `integration/` now
   drives them as subprocesses, which covers the wiring end to end, but a
   `main(argv, deps)` refactor would still allow cheaper focused tests.
-- **`VERSION` is duplicated** in `src/daemon/main.ts` and `src/cli/open-agent.ts`
-  and must be bumped in both.
 
 ---
 
@@ -649,9 +664,6 @@ does not read as an endorsement of everything above.
 
 From `TODO.md`, `connectivity-plan.md`, and `ipad-support-plan.md`:
 
-- **Persistent mount state** — write the mount table to
-  `$AGENT_DIR/mounts.json` on change and reconcile against `mount(8)` at
-  startup, so a restart neither double-mounts nor underreports.
 - **`ra logs [-f]`** — tail the launchd logs so users need not remember the
   path. No new daemon action required.
 - **Opt-in mount heartbeat** — periodically probe each mount instead of waiting

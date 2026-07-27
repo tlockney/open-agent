@@ -896,6 +896,7 @@
 │   ├── framing.ts          # readMessage()/writeMessage() — newline framing
 │   ├── oa.ts               # Client transport: send(), host identity, error render
 │   ├── path_utils.ts       # translatePath() — remote path → mount path
+│   ├── version.ts          # VERSION — single source for daemon and CLI
 │   └── rproj_utils.ts      # Pure helpers for rproj (parsing, fzf formatting)
 └── cli/
     ├── args.ts             # Pure argument parsing + message building, all CLIs
@@ -919,7 +920,8 @@ deno.json                   # Tasks (test/check/lint/fmt), strict TS, lint rules
 integration/                # End-to-end suite: boots a real daemon
 ├── harness.ts              # Scratch-HOME daemon, raw socket + CLI drivers
 ├── protocol_test.ts        # Framing, error paths, accept-loop resilience
-└── cli_test.ts             # r* commands driven as subprocesses
+├── cli_test.ts             # r* commands driven as subprocesses
+└── state_test.ts           # Mount-table recovery across a restart
 
 docs/
 ├── architecture.md         # Markdown source for this page
@@ -1056,7 +1058,7 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
     <p>Key implementation details:</p>
     <ul>
       <li><strong>Per-host serialization (<code>mountLocks</code>)</strong> — <code>ensureMount()</code> chains on a promise keyed by host so concurrent requests never spawn parallel <code>sshfs</code> processes. The chain uses <code>.catch()</code> shunts so one failed mount doesn't block later ones.</li>
-      <li><strong>Health check</strong> — <code>isMountResponsive()</code> first checks the <code>mount(8)</code> table, then runs <code>stat</code> with a 3s <code>AbortSignal</code> timeout. A hung FUSE mount would otherwise block indefinitely.</li>
+      <li><strong>Health check</strong> — <code>isMountResponsive()</code> first checks the <code>mount(8)</code> table (parsed by <code>parseMountPoints()</code>, which compares whole paths — a substring search once let host <code>work</code> match the line belonging to <code>work2</code>), then runs <code>stat</code> with a 3s <code>AbortSignal</code> timeout. A hung FUSE mount would otherwise block indefinitely.</li>
       <li><strong>Stale recovery</strong> — if the mount exists but is unresponsive, <code>forceUnmount()</code> (plain <code>umount</code>, then macOS <code>diskutil unmount force</code>) and remount.</li>
       <li><strong>Session accounting</strong> — <code>connect</code> adds a <code>sessionId</code> to a <code>Set</code>; <code>disconnect</code> removes it. When the set empties, <code>scheduleUnmount()</code> arms a 30s timer (<code>UNMOUNT_GRACE_MS</code>); any new <code>connect</code> cancels it.</li>
       <li><strong>Path translation</strong> — <code>translatePath()</code> <code>normalize()</code>s the remote path and requires it to be under the remote <code>$HOME</code>; it then rewrites it onto the mount point. Paths outside <code>$HOME</code> are rejected (only <code>$HOME</code> is mounted).</li>
@@ -1065,7 +1067,14 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
 
     <p><code>sshfs</code> is invoked with reconnect + keepalive options and metadata caching (<code>cache=yes</code>, <code>cache_timeout=120</code>, <code>attr_timeout=120</code>) since slightly-stale attributes are fine for opens.</p>
 
-    <p>The mount table lives <strong>in memory only</strong>. See <a href="#section-10">§ 10</a> for what that costs across a daemon restart.</p>
+    <p><strong>Persistence and recovery.</strong> The table is mirrored to <code>$AGENT_DIR/mounts.json</code> on every add and removal, and <code>restore()</code> rebuilds it at startup. Recovery is not a blind reload: each persisted entry is checked against the live <code>mount(8)</code> table and dropped if its mount point is gone, so a record can never resurrect a mount that no longer exists. Without this a restart lost the table while the SSHFS mounts themselves survived, and the next request stacked a second mount on the same mount point while <code>ra mounts</code> reported nothing.</p>
+
+    <div class="note">
+      <span class="note-label">Note · Sessions are not persisted</span>
+      <p>The shells that owned those ids did not survive the restart either. A recovered mount therefore carries no sessions, so nothing schedules its unmount and it lingers until a session connects and disconnects normally, or <code>ra reset</code> clears it. That is the conservative side to err on: tearing down a mount a live session is still using would be worse than leaving one to be reclaimed.</p>
+    </div>
+
+    <p>A write failure is logged and swallowed rather than failing the operation that triggered it — losing the file costs one restart's worth of recovery, whereas failing the mount costs the user their command.</p>
 
     <h3>3.6 · Logging</h3>
     <p><code>initLog()</code> opens <code>~/.local/share/open-agent/agent.log</code> for append; <code>log()</code> writes a timestamped line to the file and an untimestamped one to stdout, which launchd captures to <code>launchd-stdout.log</code> / <code>launchd-stderr.log</code> in the same directory.</p>
@@ -1242,6 +1251,7 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
         <tr><td><code>~/.local/share/open-agent/src/</code></td><td>both</td><td>Installed source tree</td></tr>
         <tr><td><code>~/.local/share/open-agent/open-agent.sock</code></td><td>local</td><td>Unix socket</td></tr>
         <tr><td><code>~/.local/share/open-agent/agent.log</code></td><td>local</td><td>Daemon log</td></tr>
+        <tr><td><code>~/.local/share/open-agent/mounts.json</code></td><td>local</td><td>Mount table, reconciled at startup</td></tr>
         <tr><td><code>~/.local/share/open-agent/launchd-std{out,err}.log</code></td><td>local</td><td>launchd-captured output</td></tr>
         <tr><td><code>~/.remote-mounts/&lt;host&gt;/</code></td><td>local</td><td>SSHFS mount points</td></tr>
         <tr><td><code>~/Library/LaunchAgents/com.open-agent.daemon.plist</code></td><td>local</td><td>launchd service</td></tr>
@@ -1291,18 +1301,14 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
     <ul>
       <li><strong><code>rproj</code> hand-rolls its own transport.</strong> <code>src/lib/oa.ts</code> is the real client; <code>rproj.ts</code> still opens its own <code>Deno.connect</code> to the socket, bypassing the error-code handling and the newline framing. It is the last of what were three separate transport implementations.</li>
       <li><strong>A burst of aborted connections can take the daemon down.</strong> macOS returns <code>EINVAL</code> from <code>accept()</code> when a client closes between <code>connect()</code> and <code>accept()</code>, and <code>MAX_CONSECUTIVE_ACCEPT_ERRORS</code> (20) of those in a row makes the loop abandon the listener. The counter resets on any successful accept, so this needs 20 consecutive aborts with nothing in between — but when the TCP listener failed to bind (the normal case on a machine that is also a remote) the Unix listener is the only one, so abandoning it exits the daemon. launchd restarts it, but in-memory mount and session state is lost. Found by the integration suite; the fix is a policy decision, so the suite stays under the threshold rather than pinning current behaviour.</li>
-      <li><strong><code>isMounted</code> substring-matches <code>mount(8)</code> output</strong>, so host <code>work</code> matches a mount line for <code>work2</code>.</li>
-      <li><strong>No persisted mount state.</strong> The mount table is in memory only. A daemon restart loses it while the SSHFS mounts survive, so the next request mounts again over the same mount point.</li>
       <li><strong><code>src/cli/</code> is still not unit-testable.</strong> Those files execute at import and call <code>Deno.exit</code>, so they cannot be imported directly. <code>integration/</code> now drives them as subprocesses, which covers the wiring end to end, but a <code>main(argv, deps)</code> refactor would still allow cheaper focused tests.</li>
-      <li><strong><code>VERSION</code> is duplicated</strong> in <code>src/daemon/main.ts</code> and <code>src/cli/open-agent.ts</code> and must be bumped in both.</li>
-    </ul>
+      </ul>
   </section>
 
   <section id="section-11">
     <h2><a href="#section-11" class="heading-link"><span class="num">§ 11</span>Evolution / open work</a></h2>
     <p>From <code>TODO.md</code>, <a href="./connectivity-plan.md">connectivity-plan.md</a>, and <a href="./ipad-support-plan.md">ipad-support-plan.md</a>:</p>
     <ul>
-      <li><strong>Persistent mount state</strong> — write the mount table to <code>$AGENT_DIR/mounts.json</code> on change and reconcile against <code>mount(8)</code> at startup, so a restart neither double-mounts nor underreports.</li>
       <li><strong><code>ra logs [-f]</code></strong> — tail the launchd logs so users need not remember the path. No new daemon action required.</li>
       <li><strong>Opt-in mount heartbeat</strong> — periodically probe each mount instead of waiting for a request to discover staleness. Deliberately off by default: background heartbeats mask real problems and create spurious filesystem activity.</li>
       <li><strong>Tailscale direct transport</strong> — client env vars already let a remote point at a Tailscale IP; the missing pieces are daemon-side binding beyond loopback, origin-awareness in the daemon (see <a href="#section-3">§ 3.1</a>), and an auth token (<code>{"token":"…"}</code>) required for non-localhost connections.</li>

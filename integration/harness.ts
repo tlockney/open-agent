@@ -139,6 +139,14 @@ async function waitForSocket(
   throw new Error(`daemon socket did not appear at ${path}`);
 }
 
+export interface StartOptions {
+  /**
+   * Populate the scratch HOME before the daemon boots — used to plant a
+   * persisted mount table and observe what startup makes of it.
+   */
+  seed?: (home: string) => Promise<void>;
+}
+
 /**
  * Start a daemon against a scratch HOME and wait until it is listening.
  *
@@ -146,7 +154,9 @@ async function waitForSocket(
  * That is the documented degraded path, not an error — every test here talks
  * over the Unix socket.
  */
-export async function startDaemon(): Promise<RunningDaemon> {
+export async function startDaemon(
+  options: StartOptions = {},
+): Promise<RunningDaemon> {
   const home = await Deno.makeTempDir({ dir: TEMP_BASE, prefix: "oa-it-" });
   if (home.length > MAX_HOME_LEN) {
     await Deno.remove(home, { recursive: true }).catch(() => {});
@@ -157,6 +167,11 @@ export async function startDaemon(): Promise<RunningDaemon> {
   }
   const sockPath = `${home}/.local/share/open-agent/open-agent.sock`;
   const cache = await denoDir();
+
+  if (options.seed) {
+    await Deno.mkdir(`${home}/.local/share/open-agent`, { recursive: true });
+    await options.seed(home);
+  }
 
   const child = new Deno.Command(Deno.execPath(), {
     args: ["run", ...DAEMON_PERMS, `${REPO_ROOT}/src/daemon/main.ts`],

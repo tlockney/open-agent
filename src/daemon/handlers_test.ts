@@ -65,7 +65,12 @@ function createFakeMountManager(opts?: {
         };
       }
       if (cmd === "mount") {
-        const list = [...mounted].map((mp) => `fakefs on ${mp}`).join("\n");
+        // Real `mount(8)` shape — `<device> on <path> (<options>)`. The
+        // parser requires the options group, and a fixture without it made
+        // every mount look absent.
+        const list = [...mounted]
+          .map((mp) => `fakefs@macfuse0 on ${mp} (macfuse, local)`)
+          .join("\n");
         return {
           success: true,
           stdout: encoder.encode(list),
@@ -96,13 +101,15 @@ function createFakeMountManager(opts?: {
       };
     },
     async mkdir() {},
+    readTextFile: () => Promise.reject(new Deno.errors.NotFound("no state")),
+    writeTextFile: () => Promise.resolve(),
     log() {},
     setTimeout(_fn, _ms) {
       return 0;
     },
     clearTimeout() {},
   };
-  return new MountManager(deps, "/mnt", 30000);
+  return new MountManager(deps, "/mnt", 30000, "/state/mounts.json");
 }
 
 /** Create fake handler deps with configurable command responses. */
