@@ -370,8 +370,9 @@ Shared by every `r*` client. Central pieces:
   Locally the daemon binds its own socket under `~/.local/share` and never
   listens on `/tmp`, so a `/tmp` socket on the local Mac is at best a leftover
   from an inbound forward.
-- **`send(message, timeoutSec)`** — try the Unix socket (2 s connect timeout),
-  then fall back to TCP. Each transport's failure is reported separately;
+- **`send(message, timeoutSec)`** — the single client transport, used by every
+  command including `rproj`. Try the Unix socket (2 s connect timeout), then
+  fall back to TCP. Each transport's failure is reported separately;
   collapsing them into one generic message used to hide real causes (a dead
   daemon, a missing Deno permission) behind a guess about the tunnel.
 
@@ -483,8 +484,19 @@ remote hosts and opens them via tmux, VS Code remote-SSH, or Finder (SSHFS).
   takes `host|path`.
 
 Its pure logic (argument parsing, host-qualifier splitting, fzf entry
-formatting, terminal restore sequences) lives in `src/lib/rproj_utils.ts` and is
-tested there.
+formatting, terminal restore sequences) lives in
+`src/lib/rproj_utils.ts` and is tested there.
+
+`rproj` reaches the daemon through `send()` like every other command. It used
+to open its own socket with its own framing and a single fixed-size read — the
+last of three separate transport implementations, and the last place the
+read-truncation bug survived.
+
+`rproj status` was removed along the way. It carried a verbatim copy of the
+defect that got `open-agent status` deleted — a top-level `sessions` key and a
+per-mount `path` field the daemon has never emitted — and `ra status`,
+`ra mounts` and `ra doctor` already cover it correctly from either side.
+`rproj status` and its `s` alias now exit with a pointer to those.
 
 ---
 
@@ -639,10 +651,6 @@ remount.
 Defects and limitations known at the time of writing, kept here so the document
 does not read as an endorsement of everything above.
 
-- **`rproj` hand-rolls its own transport.** `src/lib/oa.ts` is the real client;
-  `rproj.ts` still opens its own `Deno.connect` to the socket, bypassing the
-  error-code handling and the newline framing. It is the last of what were
-  three separate transport implementations.
 - **A burst of aborted connections can take the daemon down.** macOS returns
   `EINVAL` from `accept()` when a client closes between `connect()` and
   `accept()`, and `MAX_CONSECUTIVE_ACCEPT_ERRORS` (20) of those in a row makes

@@ -198,13 +198,23 @@ Deno.test("parseArgs: short aliases map to commands", () => {
   assertEquals(parseArgs(["t"]).command, { cmd: "tmux", opts: NO_OPTS });
   assertEquals(parseArgs(["c"]).command, { cmd: "code", opts: NO_OPTS });
   assertEquals(parseArgs(["f"]).command, { cmd: "finder", opts: NO_OPTS });
-  assertEquals(parseArgs(["s"]).command, { cmd: "status" });
 });
 
-Deno.test("parseArgs: help and status commands", () => {
+Deno.test("parseArgs: the removed status command points at ra", () => {
+  for (const arg of ["status", "s"]) {
+    assertThrows(
+      () => parseArgs([arg]),
+      Error,
+      "has been removed",
+    );
+  }
+  // and it names the replacement rather than just refusing
+  assertThrows(() => parseArgs(["status"]), Error, "ra status");
+});
+
+Deno.test("parseArgs: help command", () => {
   assertEquals(parseArgs(["help"]).command, { cmd: "help" });
   assertEquals(parseArgs(["--help"]).command, { cmd: "help" });
-  assertEquals(parseArgs(["status"]).command, { cmd: "status" });
 });
 
 Deno.test("parseArgs: open requires an argument", () => {
