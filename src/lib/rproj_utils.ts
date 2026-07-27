@@ -159,7 +159,6 @@ export type Command =
   | { cmd: "code"; opts: Opts }
   | { cmd: "finder"; opts: Opts }
   | { cmd: "default"; opts: Opts }
-  | { cmd: "status" }
   | { cmd: "help" }
   | { cmd: "setup"; opts: Opts }
   | { cmd: "open"; arg: string }
@@ -220,7 +219,6 @@ export function parseArgs(args: string[]): ParsedCommand {
     t: "tmux",
     c: "code",
     f: "finder",
-    s: "status",
     o: "open",
   };
   const cmdName = cmdMap[first] ?? first;
@@ -228,7 +226,16 @@ export function parseArgs(args: string[]): ParsedCommand {
   if (cmdName === "help" || cmdName === "--help") {
     return { command: { cmd: "help" }, debug: false };
   }
-  if (cmdName === "status") return { command: { cmd: "status" }, debug: false };
+  // `status` (and its `s` alias) was removed: it duplicated `ra`, and read
+  // response fields the daemon never emitted, so it always reported zero
+  // sessions and "unknown" mount paths. Name it rather than letting a
+  // one-keystroke habit fall through to a generic "unknown command".
+  if (cmdName === "status" || cmdName === "s") {
+    throw new Error(
+      "'rproj status' has been removed — use 'ra status' (summary), " +
+        "'ra mounts' (per-mount detail), or 'ra doctor' (full diagnostic).",
+    );
+  }
   if (cmdName === "open") {
     const arg = args[1];
     if (arg === undefined) throw new Error("Usage: rproj open 'host|path'");

@@ -1166,6 +1166,10 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
       <li><strong>Alfred integration</strong> — <code>list --json</code> emits Alfred workflow JSON; <code>open</code> takes <code>host|path</code>.</li>
     </ul>
     <p>Its pure logic (argument parsing, host-qualifier splitting, fzf entry formatting, terminal restore sequences) lives in <code>src/lib/rproj_utils.ts</code> and is tested there.</p>
+
+    <p><code>rproj</code> reaches the daemon through <code>send()</code> like every other command. It used to open its own socket with its own framing and a single fixed-size read — the last of three separate transport implementations, and the last place the read-truncation bug survived.</p>
+
+    <p><code>rproj status</code> was removed along the way. It carried a verbatim copy of the defect that got <code>open-agent status</code> deleted — a top-level <code>sessions</code> key and a per-mount <code>path</code> field the daemon has never emitted — and <code>ra status</code>, <code>ra mounts</code> and <code>ra doctor</code> already cover it correctly from either side. <code>rproj status</code> and its <code>s</code> alias now exit with a pointer to those.</p>
   </section>
 
   <section id="section-6">
@@ -1299,7 +1303,6 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
     <h2><a href="#section-10" class="heading-link"><span class="num">§ 10</span>Known gaps</a></h2>
     <p>Defects and limitations known at the time of writing, kept here so the document does not read as an endorsement of everything above.</p>
     <ul>
-      <li><strong><code>rproj</code> hand-rolls its own transport.</strong> <code>src/lib/oa.ts</code> is the real client; <code>rproj.ts</code> still opens its own <code>Deno.connect</code> to the socket, bypassing the error-code handling and the newline framing. It is the last of what were three separate transport implementations.</li>
       <li><strong>A burst of aborted connections can take the daemon down.</strong> macOS returns <code>EINVAL</code> from <code>accept()</code> when a client closes between <code>connect()</code> and <code>accept()</code>, and <code>MAX_CONSECUTIVE_ACCEPT_ERRORS</code> (20) of those in a row makes the loop abandon the listener. The counter resets on any successful accept, so this needs 20 consecutive aborts with nothing in between — but when the TCP listener failed to bind (the normal case on a machine that is also a remote) the Unix listener is the only one, so abandoning it exits the daemon. launchd restarts it, but in-memory mount and session state is lost. Found by the integration suite; the fix is a policy decision, so the suite stays under the threshold rather than pinning current behaviour.</li>
       <li><strong><code>src/cli/</code> is still not unit-testable.</strong> Those files execute at import and call <code>Deno.exit</code>, so they cannot be imported directly. <code>integration/</code> now drives them as subprocesses, which covers the wiring end to end, but a <code>main(argv, deps)</code> refactor would still allow cheaper focused tests.</li>
       </ul>

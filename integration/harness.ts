@@ -40,6 +40,17 @@ const REPLY_TIMEOUT_MS = 15_000;
  */
 const TEMP_BASE = "/tmp";
 
+/**
+ * A port nothing listens on, handed to every CLI under test.
+ *
+ * `send()` falls back to TCP loopback when the Unix socket fails, and locally
+ * that is the correct behaviour — loopback is the machine's own daemon. In a
+ * test it is a trap: a CLI whose scratch socket is missing would quietly reach
+ * the developer's real daemon and pass. Pointing the fallback at a closed port
+ * keeps every assertion about the scratch daemon honest.
+ */
+const DEAD_TCP_PORT = "45999";
+
 /** Longest HOME that still leaves room for the daemon's socket path. */
 const MAX_HOME_LEN = 104 - "/.local/share/open-agent/open-agent.sock".length;
 
@@ -260,6 +271,7 @@ export async function startDaemon(
           HOME: home,
           DENO_DIR: cache,
           OPEN_AGENT_SOCK: sockPath,
+          OPEN_AGENT_TCP_PORT: DEAD_TCP_PORT,
           ...env,
         },
         stdout: "piped",

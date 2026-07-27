@@ -139,6 +139,34 @@ test("rpaste and rcopy are wired to the daemon from a remote session", async () 
   assertStringIncludes(r.stderr, "no input on stdin");
 });
 
+test("rproj status is gone and points at ra", async () => {
+  // Removed for the same reason `open-agent status` was: it duplicated `ra`
+  // and read response fields the daemon never emitted.
+  for (const arg of ["status", "s"]) {
+    const r = await daemon.cli("rproj", [arg]);
+    assertEquals(r.code, 1, `rproj ${arg} must not succeed`);
+    const out = r.stdout + r.stderr;
+    assertStringIncludes(out, "has been removed");
+    assertStringIncludes(out, "ra status");
+    assert(!out.includes("Sessions:"), "must not print the old summary");
+  }
+});
+
+test("a CLI cannot silently fall back to a real daemon", async () => {
+  // `send()` falls back to TCP loopback when the socket fails, which is
+  // correct on a real machine — loopback is its own daemon — but in a test it
+  // would let an assertion pass against the developer's running daemon. The
+  // harness points the fallback at a closed port; this proves it holds.
+  const r = await daemon.cli("ra", ["ping"], {
+    OPEN_AGENT_SOCK: "/tmp/oa-nonexistent-socket.sock",
+  });
+  assertEquals(r.code, 1, "must fail rather than reach another daemon");
+  assert(
+    !r.stdout.includes("OK (open-agent"),
+    "a real daemon answered — the suite is not hermetic",
+  );
+});
+
 Deno.test({
   name: "cli",
   ignore: SKIP_UNLESS_INTEGRATION,

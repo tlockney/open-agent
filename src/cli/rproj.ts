@@ -10,7 +10,6 @@
 //   tmux (t)   — Open tmux session for a project
 //   code (c)   — Open VS Code for a project
 //   finder (f) — Open project in Finder via SSHFS
-//   status (s) — Show open-agent daemon status
 //   setup      — Print recommended SSH config
 //   open (o)   — Open from Alfred (host|path format)
 //   help       — Show this help
@@ -28,8 +27,8 @@ import {
   shellQuote,
   TERMINAL_RESTORE_SEQUENCE,
 } from "../lib/rproj_utils.ts";
-import { formatErrorMessage } from "../lib/oa.ts";
-import { writeMessage } from "../lib/framing.ts";
+import { formatErrorMessage, send, SOCK } from "../lib/oa.ts";
+import type { Message, Response } from "../lib/messages.ts";
 
 // --- Constants ---
 
@@ -42,7 +41,6 @@ if (!HOME) {
 const XDG_CONFIG = Deno.env.get("XDG_CONFIG_HOME") ?? `${HOME}/.config`;
 const OA_CONFIG_DIR = `${XDG_CONFIG}/open-agent`;
 const LEGACY_CONFIG_DIR = `${XDG_CONFIG}/rproj`;
-const AGENT_SOCK = `${HOME}/.local/share/open-agent/open-agent.sock`;
 const SCRIPT_NAME = "rproj";
 const SSH_TIMEOUT_MS = 5_000;
 
@@ -217,26 +215,34 @@ async function execWithTtyRestore(
   }
 }
 
-async function agentSend(message: string): Promise<Record<string, unknown>> {
-  let conn: Deno.UnixConn;
+/**
+ * Talk to the daemon through the shared client in `lib/oa.ts`.
+ *
+ * rproj used to hand-roll this: its own `Deno.connect`, its own framing, and
+ * a single fixed-size read that would truncate a reply arriving in more than
+ * one piece. It was the last of three separate transport implementations.
+ * Going through `send()` picks up the newline framing, the structured error
+ * shape, and the connect timeout for free.
+ *
+ * `mountTimeoutSec` exists because an `open` may have to bring up an sshfs
+ * mount first, which is far slower than the default request.
+ */
+async function agentSend(
+  message: Message,
+  timeoutSec?: number,
+): Promise<Response> {
   try {
-    conn = await Deno.connect({ transport: "unix", path: AGENT_SOCK });
-  } catch {
+    return await send(message, timeoutSec);
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
     throw new Error(
-      `Agent socket not found at ${AGENT_SOCK}\n  Is open-agent running? Check: launchctl list | grep open-agent`,
+      `${detail}\n  Is open-agent running? Check: launchctl list | grep open-agent`,
     );
   }
-  try {
-    await writeMessage(conn, message);
-    const buf = new Uint8Array(65536);
-    const n = await conn.read(buf);
-    if (!n) throw new Error("No response from agent");
-    const raw = new TextDecoder().decode(buf.subarray(0, n)).trim();
-    return JSON.parse(raw) as Record<string, unknown>;
-  } finally {
-    conn.close();
-  }
 }
+
+/** Generous enough for a cold sshfs mount on a sleepy host. */
+const MOUNT_TIMEOUT_SEC = 30;
 
 // --- Config ---
 
@@ -678,14 +684,12 @@ async function cmdFinder(opts: Opts): Promise<void> {
   const remoteHome = await sshGetHome(host);
 
   success(`Opening ${path} in Finder...`);
-  const response = await agentSend(JSON.stringify({
-    action: "open",
-    host,
-    remoteHome,
-    path,
-  }));
+  const response = await agentSend(
+    { action: "open", host, remoteHome, path },
+    MOUNT_TIMEOUT_SEC,
+  );
 
-  if (response.ok === true) {
+  if (response.ok) {
     if (typeof response.localPath === "string") {
       success(`Opened: ${response.localPath}`);
     }
@@ -700,7 +704,7 @@ async function cmdDefault(opts: Opts): Promise<void> {
   const projectDisplay = basename(path);
 
   const actions = ["tmux", "code"];
-  if (existsSync(AGENT_SOCK)) actions.push("finder");
+  if (existsSync(SOCK)) actions.push("finder");
 
   const action = await fzfSelectSimple(actions, {
     prompt: "Action: ",
@@ -731,39 +735,16 @@ async function cmdDefault(opts: Opts): Promise<void> {
       const remoteHome = await sshGetHome(host);
       success(`Opening ${path} in Finder...`);
       const response = await agentSend(
-        JSON.stringify({ action: "open", host, remoteHome, path }),
+        { action: "open", host, remoteHome, path },
+        MOUNT_TIMEOUT_SEC,
       );
-      if (response.ok === true && typeof response.localPath === "string") {
+      if (response.ok && typeof response.localPath === "string") {
         success(`Opened: ${response.localPath}`);
-      } else {
+      } else if (!response.ok) {
         error(formatErrorMessage(response.error));
       }
       break;
     }
-  }
-}
-
-async function cmdStatus(): Promise<void> {
-  const response = await agentSend('{"action":"status"}');
-
-  console.log("Agent: running");
-
-  const sessions = response.sessions as Record<string, unknown> | undefined ??
-    {};
-  const mounts = response.mounts as Record<string, unknown> | undefined ?? {};
-
-  console.log(`Sessions: ${Object.keys(sessions).length} active`);
-  for (const [host, sids] of Object.entries(sessions)) {
-    const count = Array.isArray(sids) ? sids.length : sids;
-    console.log(`  ${host}: ${count} session(s)`);
-  }
-
-  console.log(`Mounts: ${Object.keys(mounts).length} active`);
-  for (const [host, info] of Object.entries(mounts)) {
-    const mountPath = typeof info === "string"
-      ? info
-      : (info as Record<string, unknown>)?.path ?? "unknown";
-    console.log(`  ${host}: ${mountPath}`);
   }
 }
 
@@ -854,7 +835,6 @@ Commands:
     tmux    (t)   Open tmux session for a project
     code    (c)   Open VS Code for a project
     finder  (f)   Open project in Finder via SSHFS (requires open-agent)
-    status  (s)   Show open-agent daemon status
     setup         Print recommended SSH config for configured hosts
     open    (o)   Open from Alfred (host|path format)
     help          Show this help
@@ -887,8 +867,7 @@ Examples:
     ${SCRIPT_NAME} tmux m4mini:            # Pin host, pick project interactively
     ${SCRIPT_NAME} c                       # Interactive VS Code selection
     ${SCRIPT_NAME} f                       # Interactive: open project in Finder
-    ${SCRIPT_NAME} setup                   # Print SSH config recommendations
-    ${SCRIPT_NAME} s                       # Check open-agent status`);
+    ${SCRIPT_NAME} setup                   # Print SSH config recommendations`);
 }
 
 // --- Main ---
@@ -917,9 +896,6 @@ async function main(): Promise<void> {
       break;
     case "default":
       await cmdDefault(command.opts);
-      break;
-    case "status":
-      await cmdStatus();
       break;
     case "setup":
       cmdSetup(command.opts);
