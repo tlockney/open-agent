@@ -168,8 +168,23 @@ sockets. Its one job is deciding which `accept()` failures are fatal:
   macOS returns `EINVAL` when a client closes between `connect()` and
   `accept()`, which every short-lived `r*` command does routinely. Treating that
   as fatal previously tore down the Unix listener on the first such connection.
-- After `MAX_CONSECUTIVE_ACCEPT_ERRORS` (20) in a row, the listener is
-  considered genuinely broken and the loop gives up.
+- A listener that fails **continuously for `ABANDON_AFTER_MS`** (30 s) is
+  considered genuinely broken and the loop gives up, letting `main()` exit for
+  a launchd restart with a fresh descriptor.
+
+The budget is a duration rather than a count, and that distinction is the whole
+point. A count is trivially reached by a burst of aborted client connections —
+25 rapid connect-then-close cycles tripped the old limit of 20 — and when the
+TCP listener has failed to bind (the normal case on a machine that is also a
+remote) the Unix listener is the only one, so abandoning it took the daemon
+down and lost every session's mount state. A burst is bounded in *time*; a
+broken listener is not.
+
+Retries pause only once a failing run outlives `BACKOFF_AFTER_MS` (100 ms),
+and then by `BACKOFF_MS` (50 ms). That ordering matters: pausing during a burst
+would stall the listener for exactly as long as clients keep aborting, while
+pausing during a genuine spin is what stops `accept()` failing thousands of
+times a second. A burst therefore never pauses at all.
 
 If *both* loops return without a shutdown having been requested, the daemon is
 running with no way to be reached. `main()` then exits **non-zero** on purpose:
@@ -612,7 +627,8 @@ remount.
 | Daemon constant | Default | Meaning |
 |-----------------|---------|---------|
 | `UNMOUNT_GRACE_MS` | `30000` | Idle grace before unmount |
-| `MAX_CONSECUTIVE_ACCEPT_ERRORS` | `20` | Accept failures before abandoning a listener |
+| `ABANDON_AFTER_MS` | `30000` | Continuous accept failure before abandoning a listener |
+| `BACKOFF_AFTER_MS` / `BACKOFF_MS` | `100` / `50` | When retries start pausing, and by how much |
 | `MAX_MESSAGE_BYTES` | `8 MiB` | Largest single request or response |
 | `TCP_BIND_ATTEMPTS` / `TCP_BIND_RETRY_MS` | `3` / `500` | TCP bind retry policy |
 | sshfs `cache_timeout` / `attr_timeout` | `120` | Metadata cache seconds |
@@ -651,16 +667,6 @@ remount.
 Defects and limitations known at the time of writing, kept here so the document
 does not read as an endorsement of everything above.
 
-- **A burst of aborted connections can take the daemon down.** macOS returns
-  `EINVAL` from `accept()` when a client closes between `connect()` and
-  `accept()`, and `MAX_CONSECUTIVE_ACCEPT_ERRORS` (20) of those in a row makes
-  the loop abandon the listener. The counter resets on any successful accept,
-  so this needs 20 consecutive aborts with nothing in between — but when the
-  TCP listener failed to bind (the normal case on a machine that is also a
-  remote) the Unix listener is the only one, so abandoning it exits the daemon.
-  launchd restarts it, but in-memory mount and session state is lost. Found by
-  the integration suite; the fix is a policy decision, so the suite stays under
-  the threshold rather than pinning current behaviour.
 - **`src/cli/` is still not unit-testable.** Those files execute at import and
   call `Deno.exit`, so they cannot be imported directly. `integration/` now
   drives them as subprocesses, which covers the wiring end to end, but a
