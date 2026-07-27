@@ -14,8 +14,7 @@ import { createRealDeps, MountManager } from "./mount_manager.ts";
 import { closeLog, initLog, log } from "./logger.ts";
 import { handleMessage, type HandlerDeps } from "./handlers.ts";
 import { acceptConnections } from "./accept.ts";
-
-const VERSION = "0.7.4";
+import { VERSION } from "../lib/version.ts";
 
 const HOME = Deno.env.get("HOME");
 if (!HOME) {
@@ -30,6 +29,7 @@ const TCP_BIND_ATTEMPTS = 3;
 const TCP_BIND_RETRY_MS = 500;
 const MOUNT_BASE = `${HOME}/.remote-mounts`;
 const LOG_PATH = `${AGENT_DIR}/agent.log`;
+const STATE_PATH = `${AGENT_DIR}/mounts.json`;
 const UNMOUNT_GRACE_MS = 30_000; // 30s after last session disconnects
 
 // --- Wiring ---
@@ -38,6 +38,7 @@ const mountManager = new MountManager(
   createRealDeps(log),
   MOUNT_BASE,
   UNMOUNT_GRACE_MS,
+  STATE_PATH,
 );
 
 const handlerDeps: HandlerDeps = {
@@ -154,6 +155,9 @@ async function main(): Promise<void> {
   await initLog(AGENT_DIR, LOG_PATH);
   await Deno.mkdir(AGENT_DIR, { recursive: true });
   await Deno.mkdir(MOUNT_BASE, { recursive: true });
+
+  // Reconcile any mounts that outlived the previous process before serving.
+  await mountManager.restore();
 
   // Clean up stale socket
   try {

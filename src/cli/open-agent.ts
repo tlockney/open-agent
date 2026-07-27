@@ -10,8 +10,8 @@
 
 import { blue, green, red, yellow } from "jsr:@std/fmt@1/colors";
 import { existsSync } from "jsr:@std/fs@1/exists";
+import { VERSION } from "../lib/version.ts";
 
-const VERSION = "0.7.4";
 const REPO_OWNER = "tlockney";
 const REPO_NAME = "open-agent";
 
