@@ -68,6 +68,7 @@ src/
 │   ├── oa.ts               # Client transport: send(), host identity, error render
 │   ├── path_utils.ts       # translatePath() — remote path → mount path
 │   ├── version.ts          # VERSION — single source for daemon and CLI
+│   ├── deploy.ts           # buildDeployScript() — the setup-remote payload
 │   └── rproj_utils.ts      # Pure helpers for rproj (parsing, fzf formatting)
 └── cli/
     ├── args.ts             # Pure argument parsing + message building, all CLIs
@@ -462,11 +463,24 @@ Manages the toolkit itself, primarily from the local Mac:
 
 - `setup-remote <host|all>` — reads `remote-hosts`, builds a tarball of the
   remote subset of `src/` (all of `src/lib/`, the client CLIs, `args.ts`) plus
-  the hook and wrapper, and deploys it over SSH to each remote. It installs one
-  wrapper copy per client command, and **removes wrappers for host-only
-  commands** (`rproj`, `rtmux`, `open-agent`) left over from an earlier full
-  install — they would otherwise point at modules the remote subset omits and
-  die with "Module not found".
+  the hook and wrapper, and deploys it over SSH to each remote, installing one
+  wrapper copy per client command.
+
+  It is **strictly additive**: it creates directories, overlays the files it
+  ships, and removes nothing. That is not a stylistic preference. Every machine
+  in a typical setup is a *peer* — it runs its own daemon and is also a remote
+  for the others — so "this is a remote, therefore it is client-only" is false.
+  An earlier version acted on that assumption: it did
+  `rm -rf ~/.local/share/open-agent/src` before copying the client subset over
+  the top, which deleted `src/daemon/main.ts` while the launchd plist still
+  pointed at it, and separately deleted the `rproj`/`rtmux`/`open-agent`
+  wrappers. Affected machines kept running on the already-loaded process and
+  failed only at the next restart.
+
+  Orphans are now reported rather than removed: a host-only wrapper with no
+  module, or a pre-0.4 `~/.local/bin/lib`, produces a warning naming the path
+  and leaves it alone. `buildDeployScript()` in `src/lib/deploy.ts` is a pure
+  function so that "removes nothing" is asserted by tests.
 - `update` — fetches the latest GitHub release tarball and runs
   `install.sh --local`.
 - `version`.

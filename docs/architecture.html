@@ -897,6 +897,7 @@
 │   ├── oa.ts               # Client transport: send(), host identity, error render
 │   ├── path_utils.ts       # translatePath() — remote path → mount path
 │   ├── version.ts          # VERSION — single source for daemon and CLI
+│   ├── deploy.ts           # buildDeployScript() — the setup-remote payload
 │   └── rproj_utils.ts      # Pure helpers for rproj (parsing, fzf formatting)
 └── cli/
     ├── args.ts             # Pure argument parsing + message building, all CLIs
@@ -1148,7 +1149,7 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
     <h3>5.2 · <code>open-agent</code> (management CLI)</h3>
     <p>Manages the toolkit itself, primarily from the local Mac:</p>
     <ul>
-      <li><code>setup-remote &lt;host|all&gt;</code> — reads <code>remote-hosts</code>, builds a tarball of the remote subset of <code>src/</code> (all of <code>src/lib/</code>, the client CLIs, <code>args.ts</code>) plus the hook and wrapper, and deploys it over SSH to each remote. It installs one wrapper copy per client command, and <strong>removes wrappers for host-only commands</strong> (<code>rproj</code>, <code>rtmux</code>, <code>open-agent</code>) left over from an earlier full install — they would otherwise point at modules the remote subset omits and die with "Module not found".</li>
+      <li><code>setup-remote &lt;host|all&gt;</code> — reads <code>remote-hosts</code>, builds a tarball of the remote subset of <code>src/</code> plus the hook and wrapper, and deploys it over SSH to each remote, installing one wrapper copy per client command. It is <strong>strictly additive</strong> and removes nothing: every machine in a typical setup is a <em>peer</em> that runs its own daemon and is also a remote for the others, so "this is a remote, therefore it is client-only" is false. An earlier version acted on that assumption, deleting the whole <code>src/</code> tree (including <code>src/daemon/main.ts</code>, while the launchd plist still pointed at it) and the host-only wrappers. Orphans are now reported rather than removed, and <code>buildDeployScript()</code> is a pure function so "removes nothing" is asserted by tests.</li>
       <li><code>update</code> — fetches the latest GitHub release tarball and runs <code>install.sh --local</code>.</li>
       <li><code>version</code>.</li>
     </ul>

@@ -11,6 +11,7 @@
 import { blue, green, red, yellow } from "jsr:@std/fmt@1/colors";
 import { existsSync } from "jsr:@std/fs@1/exists";
 import { VERSION } from "../lib/version.ts";
+import { buildDeployScript, REMOTE_COMMANDS } from "../lib/deploy.ts";
 
 const REPO_OWNER = "tlockney";
 const REPO_NAME = "open-agent";
@@ -164,17 +165,7 @@ async function cmdSetupRemote(target: string): Promise<void> {
   }
 
   // Copy remote CLI scripts
-  const remoteScripts = [
-    "ropen",
-    "rcode",
-    "rcopy",
-    "rpaste",
-    "rnotify",
-    "rop",
-    "rpush",
-    "rpull",
-    "ra",
-  ];
+  const remoteScripts = [...REMOTE_COMMANDS];
   for (const script of remoteScripts) {
     const src = `${SCRIPT_DIR}/${script}.ts`;
     if (existsSync(src)) {
@@ -208,13 +199,6 @@ async function cmdSetupRemote(target: string): Promise<void> {
   ]);
   if (!tarResult.success) fail("Failed to create deploy tarball");
 
-  const remoteCmds = remoteScripts.join(" ");
-
-  // Commands that only make sense on the daemon host. They are never deployed
-  // to a remote, so a wrapper for one there can only be a leftover from an
-  // earlier full install.
-  const hostOnlyCmds = ["rproj", "rtmux", "open-agent"].join(" ");
-
   let failed = 0;
   for (const host of hosts) {
     console.log();
@@ -242,29 +226,15 @@ async function cmdSetupRemote(target: string): Promise<void> {
     const tarballBytes = await Deno.readFile(tarball);
     const deployResult = await run("ssh", [
       host,
-      "set -e; cd $(mktemp -d); tar xzf -; " +
-      // Clean up old layout artifacts (pre-src/ structure)
-      "rm -rf ~/.local/bin/lib; " +
-      // Install source tree
-      "rm -rf ~/.local/share/open-agent/src; " +
-      "cp -R src ~/.local/share/open-agent/src; " +
-      // Install hook
-      "cp open-agent-hook.sh ~/.local/share/open-agent/; " +
-      // Install busybox-style wrappers
-      `for cmd in ${remoteCmds}; do ` +
-      "cp oa-wrapper.sh ~/.local/bin/$cmd; " +
-      "chmod +x ~/.local/bin/$cmd; " +
-      "done; " +
-      // A remote that once had a full install still has wrappers for the
-      // host-only commands, but we just replaced src/ with the remote subset
-      // that omits them — so they now point at modules that aren't there and
-      // die with "Module not found". Drop any wrapper whose module is gone.
-      `for cmd in ${hostOnlyCmds}; do ` +
-      "[ -e ~/.local/bin/$cmd ] && " +
-      "[ ! -f ~/.local/share/open-agent/src/cli/$cmd.ts ] && " +
-      "rm -f ~/.local/bin/$cmd; " +
-      "done; true",
+      buildDeployScript(remoteScripts),
     ], { stdin: "piped", input: tarballBytes });
+
+    for (const line of deployResult.stdout.split("\n")) {
+      const warning = line.trim();
+      if (warning.startsWith("oa-warn:")) {
+        warn(`${host}: ${warning.slice("oa-warn:".length).trim()}`);
+      }
+    }
 
     if (deployResult.success) {
       info(`${host}: deployed successfully`);
