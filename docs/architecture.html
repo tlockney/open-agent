@@ -969,7 +969,7 @@ docs/
     <ul>
       <li><code>BadResource</code> / <code>Interrupted</code> mean the listener was closed by <code>shutdown()</code> — a normal end to the loop.</li>
       <li>Anything else is treated as <strong>per-connection noise</strong>, not listener death. macOS returns <code>EINVAL</code> when a client closes between <code>connect()</code> and <code>accept()</code>, which every short-lived <code>r*</code> command does routinely. Treating that as fatal previously tore down the Unix listener on the first such connection.</li>
-      <li>After <code>MAX_CONSECUTIVE_ACCEPT_ERRORS</code> (20) in a row, the listener is considered genuinely broken and the loop gives up.</li>
+      <li>A listener that fails <strong>continuously for <code>ABANDON_AFTER_MS</code></strong> (30&nbsp;s) is considered genuinely broken and the loop gives up, letting <code>main()</code> exit for a launchd restart with a fresh descriptor.</li>
     </ul>
 
     <div class="note">
@@ -1277,7 +1277,8 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
       <thead><tr><th>Daemon constant</th><th>Default</th><th>Meaning</th></tr></thead>
       <tbody>
         <tr><td><code>UNMOUNT_GRACE_MS</code></td><td><code>30000</code></td><td>Idle grace before unmount</td></tr>
-        <tr><td><code>MAX_CONSECUTIVE_ACCEPT_ERRORS</code></td><td><code>20</code></td><td>Accept failures before abandoning a listener</td></tr>
+        <tr><td><code>ABANDON_AFTER_MS</code></td><td><code>30000</code></td><td>Continuous accept failure before abandoning a listener</td></tr>
+        <tr><td><code>BACKOFF_AFTER_MS</code> / <code>BACKOFF_MS</code></td><td><code>100</code> / <code>50</code></td><td>When retries start pausing, and by how much</td></tr>
         <tr><td><code>MAX_MESSAGE_BYTES</code></td><td><code>8 MiB</code></td><td>Largest single request or response</td></tr>
         <tr><td><code>TCP_BIND_ATTEMPTS</code> / <code>TCP_BIND_RETRY_MS</code></td><td><code>3</code> / <code>500</code></td><td>TCP bind retry policy</td></tr>
         <tr><td>sshfs <code>cache_timeout</code> / <code>attr_timeout</code></td><td><code>120</code></td><td>Metadata cache seconds</td></tr>
@@ -1303,7 +1304,6 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
     <h2><a href="#section-10" class="heading-link"><span class="num">§ 10</span>Known gaps</a></h2>
     <p>Defects and limitations known at the time of writing, kept here so the document does not read as an endorsement of everything above.</p>
     <ul>
-      <li><strong>A burst of aborted connections can take the daemon down.</strong> macOS returns <code>EINVAL</code> from <code>accept()</code> when a client closes between <code>connect()</code> and <code>accept()</code>, and <code>MAX_CONSECUTIVE_ACCEPT_ERRORS</code> (20) of those in a row makes the loop abandon the listener. The counter resets on any successful accept, so this needs 20 consecutive aborts with nothing in between — but when the TCP listener failed to bind (the normal case on a machine that is also a remote) the Unix listener is the only one, so abandoning it exits the daemon. launchd restarts it, but in-memory mount and session state is lost. Found by the integration suite; the fix is a policy decision, so the suite stays under the threshold rather than pinning current behaviour.</li>
       <li><strong><code>src/cli/</code> is still not unit-testable.</strong> Those files execute at import and call <code>Deno.exit</code>, so they cannot be imported directly. <code>integration/</code> now drives them as subprocesses, which covers the wiring end to end, but a <code>main(argv, deps)</code> refactor would still allow cheaper focused tests.</li>
       </ul>
   </section>

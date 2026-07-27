@@ -145,24 +145,26 @@ test("an over-cap request is refused and the daemon survives", async () => {
   assertEquals(after.ok, true, "daemon must stay up after refusing input");
 });
 
-test("a client that connects and vanishes does not kill the listener", async () => {
-  // macOS surfaces this as EINVAL from accept(). Treating it as fatal once
-  // tore down the Unix listener on the first short-lived r* command.
-  //
-  // Deliberately well under MAX_CONSECUTIVE_ACCEPT_ERRORS (20): the daemon
-  // still abandons the listener at that threshold, and with no TCP listener
-  // bound that takes the whole daemon down. See §10 of the architecture doc —
-  // changing that policy is a separate decision, so this asserts the
-  // regression that was actually fixed rather than pinning the threshold.
-  for (let i = 0; i < 10; i++) {
+test("a burst of aborted connections does not kill the listener", async () => {
+  // macOS surfaces each of these as EINVAL from accept(). Two regressions
+  // live here: treating one as fatal once tore down the Unix listener on the
+  // first short-lived r* command, and a later counter-based budget meant 20
+  // in a row abandoned the listener — which, with no TCP listener bound,
+  // exited the daemon. 60 is well past that old limit and must be harmless.
+  for (let i = 0; i < 60; i++) {
     const conn = await Deno.connect({
       transport: "unix",
       path: daemon.sockPath,
     });
     conn.close();
   }
+
   const res = await daemon.request({ action: "ping" });
-  assertEquals(res.ok, true, "listener must survive abandoned connections");
+  assertEquals(res.ok, true, "listener must survive a burst of aborts");
+  assert(
+    !daemon.log().includes("abandoning"),
+    "a burst must never cost the daemon its listener",
+  );
 });
 
 Deno.test({
