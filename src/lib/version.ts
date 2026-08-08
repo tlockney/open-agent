@@ -5,4 +5,4 @@
 // so `ra ping` could report one version while `open-agent version` reported
 // another.
 
-export const VERSION = "0.8.0";
+export const VERSION = "0.8.1";
