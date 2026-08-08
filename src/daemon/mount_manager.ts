@@ -307,11 +307,19 @@ export class MountManager {
     await this.deps.mkdir(mountPoint, { recursive: true });
 
     this.deps.log(`Mounting ${host}:${remoteHome} at ${mountPoint}`);
+    // The mount's ssh must not join (or become) the per-host mux master:
+    // ControlMaster auto makes the always-on sshfs connection the master,
+    // which then owns the RemoteForwards in ~/.ssh/config and never expires
+    // (ControlPersist only counts down while no session is attached), so
+    // every later `ssh` to that host fails to re-request the same forwards.
+    // sshfs passes unknown -o options straight through to ssh.
     const result = await this.deps.runCommand("sshfs", [
       `${host}:${remoteHome}`,
       mountPoint,
       "-o",
       "reconnect",
+      "-o",
+      "ControlMaster=no",
       "-o",
       "ServerAliveInterval=15",
       "-o",
