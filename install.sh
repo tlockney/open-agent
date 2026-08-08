@@ -132,10 +132,26 @@ info "deno: $DENO ($(deno --version | head -1))"
 # another machine, so requiring them here would block installs that don't
 # need them.
 if [[ $WITH_DAEMON -eq 1 ]]; then
-    if command -v sshfs &>/dev/null; then
-        info "sshfs: $(command -v sshfs)"
+    # Look beyond PATH. The sshfs-mac cask installs a pkg that lands in
+    # /usr/local/bin, which a non-login shell often does not have on PATH —
+    # so `command -v sshfs` alone reports it missing on machines that have
+    # it installed. The daemon itself is fine either way: its launchd plist
+    # sets a PATH covering both Homebrew prefixes.
+    SSHFS_BIN=$(command -v sshfs 2>/dev/null || true)
+    if [[ -z "$SSHFS_BIN" ]]; then
+        for candidate in /usr/local/bin/sshfs /opt/homebrew/bin/sshfs; do
+            if [[ -x "$candidate" ]]; then
+                SSHFS_BIN="$candidate"
+                break
+            fi
+        done
+    fi
+
+    if [[ -n "$SSHFS_BIN" ]]; then
+        info "sshfs: $SSHFS_BIN"
     else
-        fail "sshfs not found. Install macFUSE + sshfs:
+        fail "sshfs not found on PATH, /usr/local/bin or /opt/homebrew/bin.
+    Install macFUSE + sshfs:
     brew install --cask macfuse
     brew install gromgit/fuse/sshfs-mac
 
