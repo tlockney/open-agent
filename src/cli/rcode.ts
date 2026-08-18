@@ -6,27 +6,20 @@
 
 import { dirname } from "jsr:@std/path@1/dirname";
 import { fromFileUrl } from "jsr:@std/path@1/from-file-url";
-import { isRemoteSession } from "../lib/oa.ts";
+import { type CliDeps, realDeps } from "./deps.ts";
 
 const scriptDir = dirname(fromFileUrl(import.meta.url));
-const target = Deno.args[0] ?? ".";
 
-if (isRemoteSession()) {
-  // On the remote — use ropen -v
-  const { code } = await new Deno.Command(`${scriptDir}/ropen.ts`, {
-    args: ["-v", target],
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-  }).output();
-  Deno.exit(code);
-} else {
-  // On the local Mac — delegate to rproj code
-  const { code } = await new Deno.Command(`${scriptDir}/rproj.ts`, {
-    args: ["code", ...Deno.args],
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-  }).output();
-  Deno.exit(code);
+export async function main(argv: string[], deps: CliDeps): Promise<void> {
+  const target = argv[0] ?? ".";
+
+  if (deps.isRemoteSession()) {
+    // On the remote — use ropen -v
+    deps.exit(await deps.exec(`${scriptDir}/ropen.ts`, ["-v", target]));
+  } else {
+    // On the local Mac — delegate to rproj code
+    deps.exit(await deps.exec(`${scriptDir}/rproj.ts`, ["code", ...argv]));
+  }
 }
+
+if (import.meta.main) main(Deno.args, realDeps);

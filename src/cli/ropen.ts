@@ -12,14 +12,7 @@ import {
   isVsCodeApp,
   parseRopenFlags,
 } from "./args.ts";
-import {
-  fail,
-  formatErrorMessage,
-  HOME,
-  isRemoteSession,
-  requireHost,
-  send,
-} from "../lib/oa.ts";
+import { type CliDeps, realDeps } from "./deps.ts";
 
 const USAGE = `Usage: ropen [options] <path|url>
 
@@ -34,93 +27,91 @@ Examples:
   ropen -v ~/projects/myapp          # Open folder in local VS Code via remote-ssh
   ropen https://github.com/foo/bar   # Open URL in local browser`;
 
-let flags: ReturnType<typeof parseRopenFlags>;
-try {
-  flags = parseRopenFlags(Deno.args);
-} catch (e) {
-  if (e instanceof CliError) fail(e.message);
-  throw e;
-}
-
-if (flags.help) {
-  console.log(USAGE);
-  Deno.exit(0);
-}
-
-if (flags.positional.length === 0) {
-  fail("No path specified. See ropen -h for usage.");
-}
-
-let target = flags.positional[0];
-const app = flags.app;
-const vscode = flags.vscode;
-
-if (!isUrl(target)) {
-  // Resolve to absolute path
+export async function main(argv: string[], deps: CliDeps): Promise<void> {
+  let flags: ReturnType<typeof parseRopenFlags>;
   try {
-    target = Deno.realPathSync(target);
-  } catch {
-    if (!target.startsWith("/")) {
-      target = `${Deno.cwd()}/${target}`;
+    flags = parseRopenFlags(argv);
+  } catch (e) {
+    if (e instanceof CliError) deps.fail(e.message);
+    throw e;
+  }
+
+  if (flags.help) {
+    console.log(USAGE);
+    deps.exit(0);
+  }
+
+  if (flags.positional.length === 0) {
+    deps.fail("No path specified. See ropen -h for usage.");
+  }
+
+  let target = flags.positional[0];
+  const app = flags.app;
+  const vscode = flags.vscode;
+
+  if (!isUrl(target)) {
+    // Resolve to absolute path
+    try {
+      target = deps.realPathSync(target);
+    } catch {
+      if (!target.startsWith("/")) {
+        target = `${deps.cwd()}/${target}`;
+      }
     }
   }
-}
 
-// Not in an SSH session — we're on the local Mac, so the agent round-trip
-// is pointless and `target` is already a real local path. Run native open
-// (or VS Code) directly. Note: this only triggers when we were never
-// remote; the agent-unreachable-while-remote case below still errors loudly.
-if (!isRemoteSession()) {
-  let cmdArgs: string[];
-  if (isUrl(target)) {
-    cmdArgs = ["open", target];
-  } else if (vscode || isVsCodeApp(app)) {
-    cmdArgs = ["code", target];
-  } else if (app) {
-    cmdArgs = ["open", "-a", app, target];
+  // Not in an SSH session — we're on the local Mac, so the agent round-trip
+  // is pointless and `target` is already a real local path. Run native open
+  // (or VS Code) directly. Note: this only triggers when we were never
+  // remote; the agent-unreachable-while-remote case below still errors loudly.
+  if (!deps.isRemoteSession()) {
+    let cmdArgs: string[];
+    if (isUrl(target)) {
+      cmdArgs = ["open", target];
+    } else if (vscode || isVsCodeApp(app)) {
+      cmdArgs = ["code", target];
+    } else if (app) {
+      cmdArgs = ["open", "-a", app, target];
+    } else {
+      cmdArgs = ["open", target];
+    }
+    deps.exit(await deps.exec(cmdArgs[0], cmdArgs.slice(1)));
+  }
+
+  // Build message (URL → open-url; VS Code app name or -v → open-vscode; etc.)
+  const msg = buildOpenMessage({
+    target,
+    app,
+    vscode,
+    host: deps.requireHost(),
+    home: deps.env.get("HOME") ?? "",
+  });
+
+  // Send to agent (tries Unix socket, then TCP)
+  let response: import("../lib/messages.ts").Response;
+  try {
+    response = await deps.send(msg);
+  } catch (e) {
+    // No native-open fallback — that path silently produced "file not
+    // found" errors when the SSHFS mount was gone. Surface the real cause
+    // and point at the diagnostic command instead.
+    const detail = e instanceof Error ? e.message : String(e);
+    deps.fail(
+      `agent unreachable: ${detail}\n` +
+        `  → Is the daemon up on the local Mac ('launchctl list | grep open-agent')?\n` +
+        `    If so, the SSH tunnel may have died — reconnect SSH, or run 'ra ping' to diagnose.`,
+    );
+  }
+
+  // Handle response
+  if (response.ok) {
+    const localPath = response.localPath;
+    if (typeof localPath === "string") {
+      console.log(`Opened: ${localPath}`);
+    }
   } else {
-    cmdArgs = ["open", target];
+    deps.fail(deps.formatErrorMessage(response.error));
   }
-  const { code } = await new Deno.Command(cmdArgs[0], {
-    args: cmdArgs.slice(1),
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-  }).output();
-  Deno.exit(code);
 }
 
-// Build message (URL → open-url; VS Code app name or -v → open-vscode; etc.)
-const msg = buildOpenMessage({
-  target,
-  app,
-  vscode,
-  host: requireHost(),
-  home: HOME,
-});
-
-// Send to agent (tries Unix socket, then TCP)
-let response: import("../lib/messages.ts").Response;
-try {
-  response = await send(msg);
-} catch (e) {
-  // No native-open fallback — that path silently produced "file not
-  // found" errors when the SSHFS mount was gone. Surface the real cause
-  // and point at the diagnostic command instead.
-  const detail = e instanceof Error ? e.message : String(e);
-  fail(
-    `agent unreachable: ${detail}\n` +
-      `  → Is the daemon up on the local Mac ('launchctl list | grep open-agent')?\n` +
-      `    If so, the SSH tunnel may have died — reconnect SSH, or run 'ra ping' to diagnose.`,
-  );
-}
-
-// Handle response
-if (response.ok) {
-  const localPath = response.localPath;
-  if (typeof localPath === "string") {
-    console.log(`Opened: ${localPath}`);
-  }
-} else {
-  fail(formatErrorMessage(response.error));
-}
+if (import.meta.main) main(Deno.args, realDeps);

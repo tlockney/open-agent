@@ -5,7 +5,7 @@
 //        rnotify -s "Ping" "Title" "Message"
 
 import { CliError, parseRnotifyArgs } from "./args.ts";
-import { checkResponse, fail, requireSock, send } from "../lib/oa.ts";
+import { type CliDeps, realDeps } from "./deps.ts";
 
 const USAGE = `Usage: rnotify [options] <title> [message]
 
@@ -20,20 +20,24 @@ Examples:
   rnotify -s Ping "Deploy" "Production deploy finished"
   rnotify -u "myproject" "Tests" "Suite passed in 3m12s"`;
 
-let parsed: ReturnType<typeof parseRnotifyArgs>;
-try {
-  parsed = parseRnotifyArgs(Deno.args);
-} catch (e) {
-  if (e instanceof CliError) fail(e.message);
-  throw e;
+export async function main(argv: string[], deps: CliDeps): Promise<void> {
+  let parsed: ReturnType<typeof parseRnotifyArgs>;
+  try {
+    parsed = parseRnotifyArgs(argv);
+  } catch (e) {
+    if (e instanceof CliError) deps.fail(e.message);
+    throw e;
+  }
+
+  if (parsed.kind === "help") {
+    console.log(USAGE);
+    deps.exit(0);
+  }
+
+  deps.requireSock();
+
+  const response = await deps.send(parsed.message);
+  deps.checkResponse(response);
 }
 
-if (parsed.kind === "help") {
-  console.log(USAGE);
-  Deno.exit(0);
-}
-
-requireSock();
-
-const response = await send(parsed.message);
-checkResponse(response);
+if (import.meta.main) main(Deno.args, realDeps);

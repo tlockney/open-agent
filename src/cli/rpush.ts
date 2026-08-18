@@ -4,15 +4,7 @@
 //        rpush -d ~/Desktop file.txt # copies to specific local directory
 
 import { buildPushMessage, CliError, parseRpushArgs } from "./args.ts";
-import {
-  checkResponse,
-  fail,
-  getStringField,
-  HOME,
-  requireHost,
-  requireSock,
-  send,
-} from "../lib/oa.ts";
+import { type CliDeps, realDeps } from "./deps.ts";
 
 const USAGE = `Usage: rpush [options] <file>
 
@@ -26,39 +18,43 @@ Examples:
   rpush build.tar.gz              # → local ~/Downloads/build.tar.gz
   rpush -d ~/Desktop report.pdf   # → local ~/Desktop/report.pdf`;
 
-let parsed: ReturnType<typeof parseRpushArgs>;
-try {
-  parsed = parseRpushArgs(Deno.args);
-} catch (e) {
-  if (e instanceof CliError) fail(e.message);
-  throw e;
+export async function main(argv: string[], deps: CliDeps): Promise<void> {
+  let parsed: ReturnType<typeof parseRpushArgs>;
+  try {
+    parsed = parseRpushArgs(argv);
+  } catch (e) {
+    if (e instanceof CliError) deps.fail(e.message);
+    throw e;
+  }
+
+  if (parsed.kind === "help") {
+    console.log(USAGE);
+    deps.exit(0);
+  }
+
+  deps.requireSock();
+
+  let target = parsed.file;
+
+  // Verify file exists and resolve to absolute path
+  try {
+    const stat = deps.statSync(target);
+    if (!stat) deps.fail(`${target}: no such file`);
+  } catch {
+    deps.fail(`${target}: no such file`);
+  }
+  target = deps.realPathSync(target);
+
+  const msg = buildPushMessage({
+    path: target,
+    dest: parsed.dest,
+    host: deps.requireHost(),
+    home: deps.env.get("HOME") ?? "",
+  });
+
+  const response = await deps.send(msg, 30);
+  deps.checkResponse(response);
+  console.log(`Pushed to: ${deps.getStringField(response, "localPath")}`);
 }
 
-if (parsed.kind === "help") {
-  console.log(USAGE);
-  Deno.exit(0);
-}
-
-requireSock();
-
-let target = parsed.file;
-
-// Verify file exists and resolve to absolute path
-try {
-  const stat = Deno.statSync(target);
-  if (!stat) fail(`${target}: no such file`);
-} catch {
-  fail(`${target}: no such file`);
-}
-target = Deno.realPathSync(target);
-
-const msg = buildPushMessage({
-  path: target,
-  dest: parsed.dest,
-  host: requireHost(),
-  home: HOME,
-});
-
-const response = await send(msg, 30);
-checkResponse(response);
-console.log(`Pushed to: ${getStringField(response, "localPath")}`);
+if (import.meta.main) main(Deno.args, realDeps);

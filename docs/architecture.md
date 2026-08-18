@@ -687,10 +687,13 @@ remount.
 Defects and limitations known at the time of writing, kept here so the document
 does not read as an endorsement of everything above.
 
-- **`src/cli/` is still not unit-testable.** Those files execute at import and
-  call `Deno.exit`, so they cannot be imported directly. `integration/` now
-  drives them as subprocesses, which covers the wiring end to end, but a
-  `main(argv, deps)` refactor would still allow cheaper focused tests.
+- **`src/cli/` is now importable and unit-testable.** Each CLI exports a
+  `main(argv, deps)` function and runs only when executed directly
+  (`import.meta.main`), so importing a module no longer executes anything or
+  calls `Deno.exit`. Effects go through a shared `CliDeps` interface
+  (`src/cli/deps.ts`), so tests can call `main` with fakes — see
+  `src/cli/ropen_test.ts`. `integration/` still drives them as subprocesses
+  for the end-to-end wiring.
 
 ---
 

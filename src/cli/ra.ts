@@ -6,16 +6,12 @@
 // either the local Mac or a remote SSH session — same code path either
 // way; the transport layer figures out where the daemon lives.
 
-import { existsSync } from "jsr:@std/fs@1/exists";
 import type { Message, Response } from "../lib/messages.ts";
 import { CliError, parseRaCommand } from "./args.ts";
+import { type CliDeps, realDeps } from "./deps.ts";
 import {
-  fail,
-  formatErrorMessage,
-  HOME,
   HOST,
   HOST_IDENTITY_HELP,
-  send,
   SOCK,
   TCP_HOST,
   TCP_PORT,
@@ -33,48 +29,54 @@ Commands:
   logs [-f]         Tail the daemon log (local only; -f follows)
   help              Show this help`;
 
-let parsed: ReturnType<typeof parseRaCommand>;
-try {
-  parsed = parseRaCommand(Deno.args);
-} catch (e) {
-  if (e instanceof CliError) fail(`${e.message}\n\n${USAGE}`);
-  throw e;
-}
+export async function main(argv: string[], deps: CliDeps): Promise<void> {
+  let parsed: ReturnType<typeof parseRaCommand>;
+  try {
+    parsed = parseRaCommand(argv);
+  } catch (e) {
+    if (e instanceof CliError) deps.fail(`${e.message}\n\n${USAGE}`);
+    throw e;
+  }
 
-if (parsed.kind === "help") {
-  console.log(USAGE);
-  Deno.exit(0);
-}
+  if (parsed.kind === "help") {
+    console.log(USAGE);
+    deps.exit(0);
+  }
 
-switch (parsed.command) {
-  case "ping":
-    await runPing();
-    break;
-  case "status":
-    await runStatus();
-    break;
-  case "mounts":
-    await runMounts();
-    break;
-  case "reset":
-    await runReset(parsed.host);
-    break;
-  case "doctor":
-    await runDoctor();
-    break;
-  case "logs":
-    await runLogs(parsed.follow ?? false);
-    break;
+  switch (parsed.command) {
+    case "ping":
+      await runPing(deps);
+      break;
+    case "status":
+      await runStatus(deps);
+      break;
+    case "mounts":
+      await runMounts(deps);
+      break;
+    case "reset":
+      await runReset(parsed.host, deps);
+      break;
+    case "doctor":
+      await runDoctor(deps);
+      break;
+    case "logs":
+      await runLogs(parsed.follow ?? false, deps);
+      break;
+  }
 }
 
 // --- Subcommand implementations ---
 
-async function sendOrFail(msg: Message, timeoutSec = 5): Promise<Response> {
+async function sendOrFail(
+  deps: CliDeps,
+  msg: Message,
+  timeoutSec = 5,
+): Promise<Response> {
   try {
-    return await send(msg, timeoutSec);
+    return await deps.send(msg, timeoutSec);
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
-    fail(
+    deps.fail(
       `agent unreachable: ${detail}\n` +
         `  → Is the daemon up on the local Mac ('launchctl list | grep open-agent')?\n` +
         `    If so, the SSH tunnel may have died — reconnect SSH.`,
@@ -82,18 +84,18 @@ async function sendOrFail(msg: Message, timeoutSec = 5): Promise<Response> {
   }
 }
 
-async function runPing(): Promise<void> {
+async function runPing(deps: CliDeps): Promise<void> {
   // Tight timeout — ping does no I/O on the daemon side, so anything
   // beyond a couple of seconds means the transport is unhealthy.
-  const response = await sendOrFail({ action: "ping" }, 3);
-  if (!response.ok) fail(formatErrorMessage(response.error));
+  const response = await sendOrFail(deps, { action: "ping" }, 3);
+  if (!response.ok) deps.fail(deps.formatErrorMessage(response.error));
   const version = typeof response.version === "string" ? response.version : "?";
   console.log(`OK (open-agent v${version})`);
 }
 
-async function runStatus(): Promise<void> {
-  const response = await sendOrFail({ action: "status" });
-  if (!response.ok) fail(formatErrorMessage(response.error));
+async function runStatus(deps: CliDeps): Promise<void> {
+  const response = await sendOrFail(deps, { action: "status" });
+  if (!response.ok) deps.fail(deps.formatErrorMessage(response.error));
   const version = typeof response.version === "string" ? response.version : "?";
   const mounts = (response.mounts as Record<string, unknown> | undefined) ?? {};
   const count = Object.keys(mounts).length;
@@ -112,9 +114,9 @@ interface MountInfo {
   pendingUnmount: boolean;
 }
 
-async function runMounts(): Promise<void> {
-  const response = await sendOrFail({ action: "status" });
-  if (!response.ok) fail(formatErrorMessage(response.error));
+async function runMounts(deps: CliDeps): Promise<void> {
+  const response = await sendOrFail(deps, { action: "status" });
+  if (!response.ok) deps.fail(deps.formatErrorMessage(response.error));
   const mounts = (response.mounts as Record<string, MountInfo> | undefined) ??
     {};
   const entries = Object.entries(mounts).sort(([a], [b]) => a.localeCompare(b));
@@ -145,11 +147,15 @@ async function runMounts(): Promise<void> {
   }
 }
 
-async function runReset(host?: string): Promise<void> {
+async function runReset(
+  host: string | undefined,
+  deps: CliDeps,
+): Promise<void> {
   const response = await sendOrFail(
+    deps,
     host ? { action: "reset", host } : { action: "reset" },
   );
-  if (!response.ok) fail(formatErrorMessage(response.error));
+  if (!response.ok) deps.fail(deps.formatErrorMessage(response.error));
   const reset = (response.reset as string[] | undefined) ?? [];
   if (reset.length === 0) {
     console.log(
@@ -168,14 +174,14 @@ interface DoctorMountInfo {
   pendingUnmount: boolean;
 }
 
-async function runDoctor(): Promise<void> {
+async function runDoctor(deps: CliDeps): Promise<void> {
   console.log("open-agent doctor");
   console.log("");
 
   // Client-side transport info — visible regardless of daemon state.
   console.log("Transport:");
   console.log(
-    `  socket:   ${SOCK} ${existsSync(SOCK) ? "(present)" : "(missing)"}`,
+    `  socket:   ${SOCK} ${deps.existsSync(SOCK) ? "(present)" : "(missing)"}`,
   );
   console.log(`  tcp:      ${TCP_HOST}:${TCP_PORT}`);
   console.log(
@@ -191,12 +197,12 @@ async function runDoctor(): Promise<void> {
   let pingDetail = "";
   let version = "?";
   try {
-    const r = await send({ action: "ping" }, 3);
+    const r = await deps.send({ action: "ping" }, 3);
     if (r.ok) {
       pingOk = true;
       version = typeof r.version === "string" ? r.version : "?";
     } else {
-      pingDetail = formatErrorMessage(r.error);
+      pingDetail = deps.formatErrorMessage(r.error);
     }
   } catch (e) {
     pingDetail = e instanceof Error ? e.message : String(e);
@@ -211,23 +217,23 @@ async function runDoctor(): Promise<void> {
     console.log(
       "→ Reconnect SSH (if remote) or check the daemon launchd service.",
     );
-    Deno.exit(1);
+    deps.exit(1);
   }
 
   // Per-mount diagnostic probe.
   let docResp: Response;
   try {
-    docResp = await send({ action: "doctor" }, 10);
+    docResp = await deps.send({ action: "doctor" }, 10);
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     console.log(`Mounts: ✗ probe failed — ${detail}`);
-    Deno.exit(1);
+    deps.exit(1);
   }
   if (!docResp.ok) {
     console.log(
-      `Mounts: ✗ probe failed — ${formatErrorMessage(docResp.error)}`,
+      `Mounts: ✗ probe failed — ${deps.formatErrorMessage(docResp.error)}`,
     );
-    Deno.exit(1);
+    deps.exit(1);
   }
 
   const mounts =
@@ -263,20 +269,18 @@ async function runDoctor(): Promise<void> {
  * through the transport. `-f` streams new lines as they are written, which is
  * the useful mode when watching a mount or a failing request live.
  */
-async function runLogs(follow: boolean): Promise<void> {
-  const logPath = `${HOME}/.local/share/open-agent/agent.log`;
-  if (!existsSync(logPath)) {
-    fail(
+async function runLogs(follow: boolean, deps: CliDeps): Promise<void> {
+  const logPath = `${
+    deps.env.get("HOME") ?? ""
+  }/.local/share/open-agent/agent.log`;
+  if (!deps.existsSync(logPath)) {
+    deps.fail(
       `no daemon log at ${logPath}\n` +
         `  → Is the daemon installed on this machine? 'ra logs' reads the local log.`,
     );
   }
   const args = follow ? ["-f", "-n", "50", logPath] : ["-n", "50", logPath];
-  const { code } = await new Deno.Command("tail", {
-    args,
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-  }).output();
-  Deno.exit(code);
+  deps.exit(await deps.exec("tail", args));
 }
+
+if (import.meta.main) main(Deno.args, realDeps);

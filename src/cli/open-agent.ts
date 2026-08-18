@@ -9,9 +9,9 @@
 //   help                      Show this help
 
 import { blue, green, red, yellow } from "jsr:@std/fmt@1/colors";
-import { existsSync } from "jsr:@std/fs@1/exists";
 import { VERSION } from "../lib/version.ts";
 import { buildDeployScript, REMOTE_COMMANDS } from "../lib/deploy.ts";
+import { type CliDeps, realDeps } from "./deps.ts";
 
 const REPO_OWNER = "tlockney";
 const REPO_NAME = "open-agent";
@@ -27,17 +27,6 @@ function releaseTarballUrl(tag: string): string {
   return `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${tag}/${REPO_NAME}-${tag}.tar.gz`;
 }
 
-const HOME = Deno.env.get("HOME") ?? "";
-if (!HOME) {
-  console.error("HOME environment variable is not set");
-  Deno.exit(1);
-}
-
-const XDG_CONFIG = Deno.env.get("XDG_CONFIG_HOME") ?? `${HOME}/.config`;
-const OA_CONFIG_DIR = `${XDG_CONFIG}/open-agent`;
-const LEGACY_HOSTS_FILE = `${XDG_CONFIG}/rproj/hosts`;
-const HOSTS_FILE = `${OA_CONFIG_DIR}/remote-hosts`;
-
 // Resolve SCRIPT_DIR — the directory containing this script
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
 
@@ -51,67 +40,47 @@ function step(msg: string): void {
   console.log(`${blue("→")} ${msg}`);
 }
 
-function fail(msg: string): never {
-  console.error(`${red("✗")} ${msg}`);
-  Deno.exit(1);
+/** Config paths derived from the environment, threaded through the commands. */
+interface Ctx {
+  deps: CliDeps;
+  home: string;
+  hostsFile: string;
+  legacyHostsFile: string;
 }
 
-// --- Utilities ---
-
-async function run(
-  cmd: string,
-  args: string[],
-  opts?: {
-    stdin?: "inherit" | "null" | "piped";
-    input?: Uint8Array;
-    timeout?: number;
-  },
-): Promise<{ success: boolean; stdout: string; stderr: string; code: number }> {
-  const command = new Deno.Command(cmd, {
-    args,
-    stdin: opts?.stdin ?? "null",
-    stdout: "piped",
-    stderr: "piped",
-    signal: opts?.timeout ? AbortSignal.timeout(opts.timeout) : undefined,
-  });
-  try {
-    let child: Deno.CommandOutput;
-    if (opts?.input) {
-      const proc = command.spawn();
-      const writer = proc.stdin.getWriter();
-      await writer.write(opts.input);
-      await writer.close();
-      child = await proc.output();
-    } else {
-      child = await command.output();
-    }
-    return {
-      success: child.success,
-      stdout: new TextDecoder().decode(child.stdout).trim(),
-      stderr: new TextDecoder().decode(child.stderr).trim(),
-      code: child.code,
-    };
-  } catch {
-    return { success: false, stdout: "", stderr: "command failed", code: 1 };
+function makeCtx(deps: CliDeps): Ctx {
+  const home = deps.env.get("HOME") ?? "";
+  if (!home) {
+    console.error("HOME environment variable is not set");
+    deps.exit(1);
   }
+  const xdgConfig = deps.env.get("XDG_CONFIG_HOME") ?? `${home}/.config`;
+  const oaConfigDir = `${xdgConfig}/open-agent`;
+  return {
+    deps,
+    home,
+    hostsFile: `${oaConfigDir}/remote-hosts`,
+    legacyHostsFile: `${xdgConfig}/rproj/hosts`,
+  };
 }
 
 // --- Config ---
 
-function loadHostAliases(): string[] {
-  let hostsPath = HOSTS_FILE;
-  if (!existsSync(hostsPath)) {
-    if (existsSync(LEGACY_HOSTS_FILE)) {
-      hostsPath = LEGACY_HOSTS_FILE;
+function loadHostAliases(ctx: Ctx): string[] {
+  const { deps } = ctx;
+  let hostsPath = ctx.hostsFile;
+  if (!deps.existsSync(hostsPath)) {
+    if (deps.existsSync(ctx.legacyHostsFile)) {
+      hostsPath = ctx.legacyHostsFile;
       warn(`Using legacy hosts file at ${hostsPath}`);
     } else {
-      fail(
-        `No hosts file found at ${HOSTS_FILE}\nCreate it with format: host_alias|project_dir|label`,
+      deps.fail(
+        `No hosts file found at ${ctx.hostsFile}\nCreate it with format: host_alias|project_dir|label`,
       );
     }
   }
 
-  const text = Deno.readTextFileSync(hostsPath);
+  const text = deps.readTextFileSync(hostsPath);
   const seen = new Set<string>();
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
@@ -124,13 +93,14 @@ function loadHostAliases(): string[] {
 
 // --- Commands ---
 
-async function cmdSetupRemote(target: string): Promise<void> {
-  if (!target) fail("Usage: open-agent setup-remote <host|all>");
+async function cmdSetupRemote(ctx: Ctx, target: string): Promise<void> {
+  const { deps, home } = ctx;
+  if (!target) deps.fail("Usage: open-agent setup-remote <host|all>");
 
   let hosts: string[];
   if (target === "all") {
-    hosts = loadHostAliases();
-    if (hosts.length === 0) fail("No hosts found in config");
+    hosts = loadHostAliases(ctx);
+    if (hosts.length === 0) deps.fail("No hosts found in config");
     step(`Deploying to ${hosts.length} host(s): ${hosts.join(", ")}`);
   } else {
     hosts = [target];
@@ -141,34 +111,34 @@ async function cmdSetupRemote(target: string): Promise<void> {
 
   // Find open-agent-hook.sh
   let hookPath = `${projectRoot}/open-agent-hook.sh`;
-  if (!existsSync(hookPath)) {
-    hookPath = `${HOME}/.local/share/open-agent/open-agent-hook.sh`;
+  if (!deps.existsSync(hookPath)) {
+    hookPath = `${home}/.local/share/open-agent/open-agent-hook.sh`;
   }
-  if (!existsSync(hookPath)) fail("Cannot find open-agent-hook.sh");
+  if (!deps.existsSync(hookPath)) deps.fail("Cannot find open-agent-hook.sh");
 
   // Find oa-wrapper.sh
   let wrapperPath = `${projectRoot}/oa-wrapper.sh`;
-  if (!existsSync(wrapperPath)) {
-    wrapperPath = `${HOME}/.local/share/open-agent/oa-wrapper.sh`;
+  if (!deps.existsSync(wrapperPath)) {
+    wrapperPath = `${home}/.local/share/open-agent/oa-wrapper.sh`;
   }
-  if (!existsSync(wrapperPath)) fail("Cannot find oa-wrapper.sh");
+  if (!deps.existsSync(wrapperPath)) deps.fail("Cannot find oa-wrapper.sh");
 
   // Build tarball with new src/ layout
   step("Building deploy package...");
-  const tmpDir = Deno.makeTempDirSync();
+  const tmpDir = deps.makeTempDirSync();
 
   // Create directory structure matching remote install layout
-  await Deno.mkdir(`${tmpDir}/src/lib`, { recursive: true });
-  await Deno.mkdir(`${tmpDir}/src/cli`, { recursive: true });
+  await deps.mkdir(`${tmpDir}/src/lib`, { recursive: true });
+  await deps.mkdir(`${tmpDir}/src/cli`, { recursive: true });
 
   // Copy shared library modules
   const libDir = `${SCRIPT_DIR}/../lib`;
-  for await (const entry of Deno.readDir(libDir)) {
+  for await (const entry of deps.readDir(libDir)) {
     if (
       entry.isFile && entry.name.endsWith(".ts") &&
       !entry.name.endsWith("_test.ts")
     ) {
-      await Deno.copyFile(
+      await deps.copyFile(
         `${libDir}/${entry.name}`,
         `${tmpDir}/src/lib/${entry.name}`,
       );
@@ -179,8 +149,8 @@ async function cmdSetupRemote(target: string): Promise<void> {
   const remoteScripts = [...REMOTE_COMMANDS];
   for (const script of remoteScripts) {
     const src = `${SCRIPT_DIR}/${script}.ts`;
-    if (existsSync(src)) {
-      await Deno.copyFile(src, `${tmpDir}/src/cli/${script}.ts`);
+    if (deps.existsSync(src)) {
+      await deps.copyFile(src, `${tmpDir}/src/cli/${script}.ts`);
     }
   }
 
@@ -188,18 +158,18 @@ async function cmdSetupRemote(target: string): Promise<void> {
   // so they must not appear in remoteScripts / the wrapper symlink list)
   const sharedCliModules = ["args"];
   for (const mod of sharedCliModules) {
-    await Deno.copyFile(
+    await deps.copyFile(
       `${SCRIPT_DIR}/${mod}.ts`,
       `${tmpDir}/src/cli/${mod}.ts`,
     );
   }
 
-  await Deno.copyFile(hookPath, `${tmpDir}/open-agent-hook.sh`);
-  await Deno.copyFile(wrapperPath, `${tmpDir}/oa-wrapper.sh`);
+  await deps.copyFile(hookPath, `${tmpDir}/open-agent-hook.sh`);
+  await deps.copyFile(wrapperPath, `${tmpDir}/oa-wrapper.sh`);
 
   // Create tarball
   const tarball = `${tmpDir}/deploy.tar.gz`;
-  const tarResult = await run("tar", [
+  const tarResult = await deps.run("tar", [
     "-czf",
     tarball,
     "-C",
@@ -208,7 +178,7 @@ async function cmdSetupRemote(target: string): Promise<void> {
     "open-agent-hook.sh",
     "oa-wrapper.sh",
   ]);
-  if (!tarResult.success) fail("Failed to create deploy tarball");
+  if (!tarResult.success) deps.fail("Failed to create deploy tarball");
 
   let failed = 0;
   for (const host of hosts) {
@@ -216,7 +186,7 @@ async function cmdSetupRemote(target: string): Promise<void> {
     step(`Deploying to ${host}...`);
 
     // Validate SSH connectivity
-    const sshCheck = await run("ssh", [
+    const sshCheck = await deps.run("ssh", [
       "-o",
       "BatchMode=yes",
       "-o",
@@ -231,11 +201,14 @@ async function cmdSetupRemote(target: string): Promise<void> {
     }
 
     // Create remote directories
-    await run("ssh", [host, "mkdir -p ~/.local/bin ~/.local/share/open-agent"]);
+    await deps.run("ssh", [
+      host,
+      "mkdir -p ~/.local/bin ~/.local/share/open-agent",
+    ]);
 
     // Deploy tarball
-    const tarballBytes = await Deno.readFile(tarball);
-    const deployResult = await run("ssh", [
+    const tarballBytes = await deps.readFile(tarball);
+    const deployResult = await deps.run("ssh", [
       host,
       buildDeployScript(remoteScripts),
     ], { stdin: "piped", input: tarballBytes });
@@ -258,7 +231,7 @@ async function cmdSetupRemote(target: string): Promise<void> {
 
   // Cleanup
   try {
-    await Deno.remove(tmpDir, { recursive: true });
+    await deps.remove(tmpDir, { recursive: true });
   } catch { /* ignore */ }
 
   console.log();
@@ -279,11 +252,14 @@ Post-deploy steps on each remote host:
   3. Reconnect SSH to activate the forwarded socket.`);
 }
 
-async function cmdUpdate(): Promise<void> {
+async function cmdUpdate(ctx: Ctx): Promise<void> {
+  const { deps } = ctx;
   step("Checking for latest release...");
 
-  const apiResult = await run("curl", ["-fsSL", LATEST_RELEASE_API]);
-  if (!apiResult.success) fail("Could not fetch latest release from GitHub");
+  const apiResult = await deps.run("curl", ["-fsSL", LATEST_RELEASE_API]);
+  if (!apiResult.success) {
+    deps.fail("Could not fetch latest release from GitHub");
+  }
 
   // Parse the API response as JSON rather than regex-matching tag_name: a
   // reordered or reformatted response silently broke the old regex.
@@ -294,15 +270,17 @@ async function cmdUpdate(): Promise<void> {
   } catch {
     latestTag = "";
   }
-  if (!latestTag) fail("Could not parse release tag from GitHub API response");
+  if (!latestTag) {
+    deps.fail("Could not parse release tag from GitHub API response");
+  }
 
   step(`Latest release: ${latestTag}`);
 
-  const tmpDir = Deno.makeTempDirSync();
+  const tmpDir = deps.makeTempDirSync();
   const tarballUrl = releaseTarballUrl(latestTag);
 
   step(`Downloading ${tarballUrl}...`);
-  const dlResult = await run("curl", [
+  const dlResult = await deps.run("curl", [
     "-fsSL",
     tarballUrl,
     "-o",
@@ -310,17 +288,17 @@ async function cmdUpdate(): Promise<void> {
   ]);
   if (!dlResult.success) {
     try {
-      await Deno.remove(tmpDir, { recursive: true });
+      await deps.remove(tmpDir, { recursive: true });
     } catch { /* ignore */ }
-    fail("Failed to download release tarball");
+    deps.fail("Failed to download release tarball");
   }
 
   step("Extracting...");
-  await run("tar", ["xzf", `${tmpDir}/release.tar.gz`, "-C", tmpDir]);
+  await deps.run("tar", ["xzf", `${tmpDir}/release.tar.gz`, "-C", tmpDir]);
 
   // Find extracted directory
   let extracted = "";
-  for await (const entry of Deno.readDir(tmpDir)) {
+  for await (const entry of deps.readDir(tmpDir)) {
     if (entry.isDirectory && entry.name.startsWith(`${REPO_NAME}-`)) {
       extracted = `${tmpDir}/${entry.name}`;
       break;
@@ -330,22 +308,22 @@ async function cmdUpdate(): Promise<void> {
 
   step("Installing...");
   const installScript = `${extracted}/install.sh`;
-  if (!existsSync(installScript)) {
+  if (!deps.existsSync(installScript)) {
     try {
-      await Deno.remove(tmpDir, { recursive: true });
+      await deps.remove(tmpDir, { recursive: true });
     } catch { /* ignore */ }
-    fail("install.sh not found in release tarball");
+    deps.fail("install.sh not found in release tarball");
   }
 
-  const installResult = await run("bash", [installScript, "--local"]);
+  const installResult = await deps.run("bash", [installScript, "--local"]);
   if (!installResult.success) {
     console.error(installResult.stderr);
-    fail("Install failed");
+    deps.fail("Install failed");
   }
   if (installResult.stdout) console.log(installResult.stdout);
 
   try {
-    await Deno.remove(tmpDir, { recursive: true });
+    await deps.remove(tmpDir, { recursive: true });
   } catch { /* ignore */ }
   info("Update complete");
 }
@@ -354,7 +332,7 @@ function cmdVersion(): void {
   console.log(`open-agent ${VERSION}`);
 }
 
-function showHelp(): void {
+function showHelp(ctx: Ctx): void {
   console.log(`Usage: open-agent <command> [args]
 
 Commands:
@@ -364,7 +342,7 @@ Commands:
     help                      Show this help
 
 Config:
-    Hosts file: ${HOSTS_FILE}
+    Hosts file: ${ctx.hostsFile}
     Format: host_alias|project_dir|label (one per line)
 
 Examples:
@@ -375,23 +353,24 @@ Examples:
 
 // --- Main ---
 
-async function main(): Promise<void> {
-  const [command, ...rest] = Deno.args;
+export async function main(argv: string[], deps: CliDeps): Promise<void> {
+  const ctx = makeCtx(deps);
+  const [command, ...rest] = argv;
 
   if (!command) {
-    showHelp();
-    Deno.exit(0);
+    showHelp(ctx);
+    deps.exit(0);
   }
 
   switch (command) {
     case "setup-remote":
-      await cmdSetupRemote(rest[0] ?? "");
+      await cmdSetupRemote(ctx, rest[0] ?? "");
       break;
     case "update":
-      await cmdUpdate();
+      await cmdUpdate(ctx);
       break;
     case "status":
-      fail(
+      deps.fail(
         "'open-agent status' has been removed — use 'ra status' (summary),\n" +
           "  'ra mounts' (per-mount detail), or 'ra doctor' (full diagnostic).",
       );
@@ -402,15 +381,17 @@ async function main(): Promise<void> {
     case "help":
     case "--help":
     case "-h":
-      showHelp();
+      showHelp(ctx);
       break;
     default:
-      fail(`Unknown command: ${command}. See 'open-agent help'`);
+      deps.fail(`Unknown command: ${command}. See 'open-agent help'`);
   }
 }
 
-main().catch((err: unknown) => {
-  const msg = err instanceof Error ? err.message : String(err);
-  console.error(red(`✗ ${msg}`));
-  Deno.exit(1);
-});
+if (import.meta.main) {
+  main(Deno.args, realDeps).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(red(`✗ ${msg}`));
+    Deno.exit(1);
+  });
+}

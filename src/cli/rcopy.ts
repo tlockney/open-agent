@@ -3,34 +3,33 @@
 // Usage: echo "text" | rcopy
 //        cat file.txt | rcopy
 
-import {
-  checkResponse,
-  fail,
-  isRemoteSession,
-  requireSock,
-  send,
-} from "../lib/oa.ts";
+import { type CliDeps, realDeps } from "./deps.ts";
 
-const input = await new Response(Deno.stdin.readable).text();
-if (!input) fail("no input on stdin");
+export async function main(_argv: string[], deps: CliDeps): Promise<void> {
+  const input = await new Response(deps.stdin.readable).text();
+  if (!input) deps.fail("no input on stdin");
 
-if (!isRemoteSession()) {
-  // Local Mac — copy straight to the system clipboard.
-  const proc = new Deno.Command("pbcopy", { stdin: "piped" }).spawn();
-  const writer = proc.stdin.getWriter();
-  await writer.write(new TextEncoder().encode(input));
-  await writer.close();
-  writer.releaseLock();
-  const { code } = await proc.status;
-  Deno.exit(code);
+  if (!deps.isRemoteSession()) {
+    // Local Mac — copy straight to the system clipboard.
+    const proc = deps.spawnPiped("pbcopy");
+    const writer = proc.stdin.getWriter();
+    await writer.write(new TextEncoder().encode(input));
+    await writer.close();
+    writer.releaseLock();
+    deps.exit(await proc.status);
+  }
+
+  deps.requireSock();
+
+  let response;
+  try {
+    response = await deps.send({ action: "copy", content: input });
+  } catch (e) {
+    deps.fail(
+      `agent unreachable: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  deps.checkResponse(response);
 }
 
-requireSock();
-
-let response;
-try {
-  response = await send({ action: "copy", content: input });
-} catch (e) {
-  fail(`agent unreachable: ${e instanceof Error ? e.message : String(e)}`);
-}
-checkResponse(response);
+if (import.meta.main) main(Deno.args, realDeps);

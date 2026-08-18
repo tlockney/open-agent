@@ -4,15 +4,7 @@
 //        rpull ~/Desktop/file.txt ~/dest/dir/  # copies to specific remote directory
 
 import { buildPullMessage, CliError, parseRpullArgs } from "./args.ts";
-import {
-  checkResponse,
-  fail,
-  getStringField,
-  HOME,
-  requireHost,
-  requireSock,
-  send,
-} from "../lib/oa.ts";
+import { type CliDeps, realDeps } from "./deps.ts";
 
 const USAGE = `Usage: rpull <local-path> [remote-dest]
 
@@ -30,42 +22,46 @@ Examples:
   rpull ~/Downloads/image.png            # → ./image.png
   rpull ~/Desktop/notes.md ~/docs/       # → ~/docs/notes.md`;
 
-let parsed: ReturnType<typeof parseRpullArgs>;
-try {
-  parsed = parseRpullArgs(Deno.args);
-} catch (e) {
-  if (e instanceof CliError) fail(e.message);
-  throw e;
-}
-
-if (parsed.kind === "help") {
-  console.log(USAGE);
-  Deno.exit(0);
-}
-
-requireSock();
-
-const localPath = parsed.localPath;
-let remoteDest = parsed.remoteDest ?? Deno.cwd();
-
-// Resolve remote dest to absolute path
-try {
-  remoteDest = Deno.realPathSync(remoteDest);
-} catch {
-  if (!remoteDest.startsWith("/")) {
-    remoteDest = `${Deno.cwd()}/${remoteDest}`;
+export async function main(argv: string[], deps: CliDeps): Promise<void> {
+  let parsed: ReturnType<typeof parseRpullArgs>;
+  try {
+    parsed = parseRpullArgs(argv);
+  } catch (e) {
+    if (e instanceof CliError) deps.fail(e.message);
+    throw e;
   }
+
+  if (parsed.kind === "help") {
+    console.log(USAGE);
+    deps.exit(0);
+  }
+
+  deps.requireSock();
+
+  const localPath = parsed.localPath;
+  let remoteDest = parsed.remoteDest ?? deps.cwd();
+
+  // Resolve remote dest to absolute path
+  try {
+    remoteDest = deps.realPathSync(remoteDest);
+  } catch {
+    if (!remoteDest.startsWith("/")) {
+      remoteDest = `${deps.cwd()}/${remoteDest}`;
+    }
+  }
+
+  const response = await deps.send(
+    buildPullMessage({
+      localPath,
+      remoteDest,
+      host: deps.requireHost(),
+      home: deps.env.get("HOME") ?? "",
+    }),
+    30,
+  );
+
+  deps.checkResponse(response);
+  console.log(`Pulled to: ${deps.getStringField(response, "remotePath")}`);
 }
 
-const response = await send(
-  buildPullMessage({
-    localPath,
-    remoteDest,
-    host: requireHost(),
-    home: HOME,
-  }),
-  30,
-);
-
-checkResponse(response);
-console.log(`Pulled to: ${getStringField(response, "remotePath")}`);
+if (import.meta.main) main(Deno.args, realDeps);
