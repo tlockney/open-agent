@@ -133,6 +133,33 @@ export function isRemoteSession(): boolean {
 export const SCRIPT_NAME =
   new URL(import.meta.url).pathname.split("/").at(-2) ?? "oa";
 
+/**
+ * True when a TCP host is loopback. The daemon trusts loopback (the SSH-tunnel
+ * path) and requires the shared token only for non-loopback connections, so a
+ * client only needs to attach the token when it is talking to a non-loopback
+ * host directly.
+ */
+export function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "::1" || host === "localhost";
+}
+
+/**
+ * The shared auth token, from OPEN_AGENT_TOKEN or the deployed auth-token
+ * file. Undefined when none is configured — which is fine for loopback
+ * connections, and the daemon will reject a non-loopback one without it.
+ */
+export function getToken(): string | undefined {
+  const env = Deno.env.get("OPEN_AGENT_TOKEN");
+  if (env?.trim()) return env.trim();
+  const path = `${HOME}/.config/open-agent/auth-token`;
+  try {
+    const contents = Deno.readTextFileSync(path).trim();
+    return contents || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function fail(msg: string): never {
   console.error(`${callerName()}: ${msg}`);
   Deno.exit(1);
@@ -267,9 +294,15 @@ export async function send(
   }
 
   try {
+    // A non-loopback TCP target is a direct connection to a daemon bound
+    // beyond loopback, which requires the shared token. Loopback (the
+    // SSH-tunnel path) is trusted and needs none.
+    const tcpMessage = isLoopbackHost(TCP_HOST)
+      ? message
+      : { ...message, token: getToken() };
     return await sendVia(
       { hostname: TCP_HOST, port: TCP_PORT },
-      message,
+      tcpMessage,
       timeoutSec,
     );
   } catch (e) {

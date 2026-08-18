@@ -151,12 +151,13 @@ port may legitimately be held by an sshd `RemoteForward` when this machine is
 *also* an open-agent remote. A failed TCP bind must not take down the Unix
 listener, so it only logs and continues.
 
-> The daemon does **not** authenticate connections. Binding is strictly
-> localhost, which is safe only because traffic arrives inside an SSH tunnel.
-> Exposing the TCP listener beyond loopback would require adding auth (not yet
-> implemented). The daemon also does not currently inspect `conn.remoteAddr`
-> beyond logging the transport, so it cannot yet distinguish loopback from
-> non-loopback callers.
+By default the TCP listener binds `127.0.0.1` and trusts the SSH tunnel, so a
+loopback connection needs no credential. Setting `OPEN_AGENT_BIND` to a
+Tailscale IP or `0.0.0.0` accepts direct connections, and those are
+**authenticated**: the daemon generates a shared token at first startup
+(`~/.config/open-agent/auth-token`, mode 0600) and requires it on any
+non-loopback connection. Loopback (the SSH-tunnel path) is still trusted and
+needs no token. See `src/daemon/auth.ts`.
 
 ### 3.2 The accept loop (`accept.ts`)
 
@@ -636,6 +637,8 @@ remount.
 | `OPEN_AGENT_HOST` | *(unset → unresolved)* | remote | Host identity; must match the local Mac's SSH `Host` alias |
 | `OPEN_AGENT_SOCK` | `/tmp/open-agent.sock` remote, `~/.local/share/…` local | both | Socket path |
 | `OPEN_AGENT_TCP_HOST` / `OPEN_AGENT_TCP_PORT` | `127.0.0.1` / `19876` | both | TCP target; **setting either also opts a remote into the TCP fallback** |
+| `OPEN_AGENT_BIND` | `127.0.0.1` | local (daemon) | Address the daemon's TCP listener binds; set to a Tailscale IP or `0.0.0.0` to accept direct (authenticated) connections |
+| `OPEN_AGENT_TOKEN` | *(unset → reads `~/.config/open-agent/auth-token`)* | both | Shared token for non-loopback connections |
 | `OPEN_AGENT_DIR` | `~/.local/share/open-agent` | both | Where `oa-wrapper.sh` finds `src/` |
 
 | Daemon constant | Default | Meaning |
@@ -659,9 +662,10 @@ remount.
   filesystem. Everything else surfaces a typed error with a recovery hint.
 - **Dual-mode commands.** Every `r*` command runs the native local equivalent
   outside SSH, so one install works everywhere and muscle memory transfers.
-- **Localhost-only, trust-the-tunnel security.** No auth; safe only because the
-  daemon binds loopback and all traffic rides SSH. Network exposure would need
-  the token work sketched in `connectivity-plan.md`.
+- **Localhost-only by default, token-gated beyond loopback.** The daemon binds
+  loopback and trusts the SSH tunnel, so the default path needs no credential.
+  Binding beyond loopback (`OPEN_AGENT_BIND`) is opt-in and requires the shared
+  token on every non-loopback connection.
 - **Stateful mount, stateless connections.** Each connection is one shot, but the
   daemon holds long-lived `MountState` keyed by host with session refcounts.
 - **Per-host isolation.** Host alias is the key everywhere; multiple remotes get

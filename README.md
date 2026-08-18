@@ -266,6 +266,15 @@ Legacy config at `~/.config/rproj/hosts` is auto-detected with a warning.
 | `OPEN_AGENT_SOCK` | `/tmp/open-agent.sock` on a remote, `~/.local/share/open-agent/open-agent.sock` locally | Path to the daemon socket |
 | `OPEN_AGENT_TCP_HOST` | `127.0.0.1` | TCP fallback host. Setting it also opts a remote *into* the TCP fallback (see below) |
 | `OPEN_AGENT_TCP_PORT` | `19876` | TCP fallback port. Same opt-in effect |
+| `OPEN_AGENT_BIND` | `127.0.0.1` | *(daemon)* Address the TCP listener binds. Set to a Tailscale IP or `0.0.0.0` to accept direct connections, which then require the shared token |
+| `OPEN_AGENT_TOKEN` | *(unset → reads `~/.config/open-agent/auth-token`)* | Shared token for non-loopback connections |
+
+**Authentication.** The daemon binds loopback and trusts the SSH tunnel, so the
+default path needs no credential. If you set `OPEN_AGENT_BIND` to accept direct
+(non-loopback) connections, the daemon generates a shared token at first startup
+(`~/.config/open-agent/auth-token`) and requires it on every non-loopback
+connection. Set `OPEN_AGENT_TOKEN` (or deploy that file) on any host that
+connects directly.
 
 **The TCP fallback is local-only by default.** The SSH config forwards the Unix
 socket, not the TCP port, so inside a remote session `127.0.0.1:19876` is not
