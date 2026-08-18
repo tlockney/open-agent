@@ -452,6 +452,7 @@ lives, so the same code path serves a local Mac and a remote session.
 | `ra mounts` | Table of hosts, mount points, session counts, pending unmounts |
 | `ra reset [host]` | Tear down all mounts, or one, and purge their session state |
 | `ra doctor` | Full diagnostic: client transport config, daemon reachability with latency, then a per-mount responsiveness probe |
+| `ra logs [-f]` | Tail the daemon's own log (`agent.log`); `-f` follows. Local-only — reads the file directly rather than through the transport |
 
 `ra doctor` prints the client-side transport configuration (socket path and
 whether it exists, TCP target, resolved host identity) *before* trying to reach

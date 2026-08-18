@@ -482,6 +482,27 @@ Deno.test("parseRaCommand: reset with host", () => {
   });
 });
 
+Deno.test("parseRaCommand: logs without follow", () => {
+  assertEquals(parseRaCommand(["logs"]), {
+    kind: "run",
+    command: "logs",
+    follow: false,
+  });
+});
+
+Deno.test("parseRaCommand: logs -f sets follow", () => {
+  assertEquals(parseRaCommand(["logs", "-f"]), {
+    kind: "run",
+    command: "logs",
+    follow: true,
+  });
+  assertEquals(parseRaCommand(["logs", "--follow"]), {
+    kind: "run",
+    command: "logs",
+    follow: true,
+  });
+});
+
 Deno.test("parseRaCommand: unknown command throws", () => {
   assertThrows(
     () => parseRaCommand(["bogus"]),
