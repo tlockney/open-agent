@@ -16,6 +16,17 @@ import { buildDeployScript, REMOTE_COMMANDS } from "../lib/deploy.ts";
 const REPO_OWNER = "tlockney";
 const REPO_NAME = "open-agent";
 
+// --- GitHub release URLs (single source for the update path) ---
+
+/** API endpoint for the latest release. */
+const LATEST_RELEASE_API =
+  `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`;
+
+/** Download URL for a release tarball, named `<repo>-<tag>.tar.gz`. */
+function releaseTarballUrl(tag: string): string {
+  return `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${tag}/${REPO_NAME}-${tag}.tar.gz`;
+}
+
 const HOME = Deno.env.get("HOME") ?? "";
 if (!HOME) {
   console.error("HOME environment variable is not set");
@@ -271,21 +282,24 @@ Post-deploy steps on each remote host:
 async function cmdUpdate(): Promise<void> {
   step("Checking for latest release...");
 
-  const apiResult = await run("curl", [
-    "-fsSL",
-    `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`,
-  ]);
+  const apiResult = await run("curl", ["-fsSL", LATEST_RELEASE_API]);
   if (!apiResult.success) fail("Could not fetch latest release from GitHub");
 
-  const tagMatch = apiResult.stdout.match(/"tag_name"\s*:\s*"([^"]+)"/);
-  if (!tagMatch) fail("Could not parse release tag from GitHub API response");
-  const latestTag = tagMatch[1];
+  // Parse the API response as JSON rather than regex-matching tag_name: a
+  // reordered or reformatted response silently broke the old regex.
+  let latestTag: string;
+  try {
+    const data = JSON.parse(apiResult.stdout) as { tag_name?: unknown };
+    latestTag = typeof data.tag_name === "string" ? data.tag_name : "";
+  } catch {
+    latestTag = "";
+  }
+  if (!latestTag) fail("Could not parse release tag from GitHub API response");
 
   step(`Latest release: ${latestTag}`);
 
   const tmpDir = Deno.makeTempDirSync();
-  const tarballUrl =
-    `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${latestTag}/${REPO_NAME}-${latestTag}.tar.gz`;
+  const tarballUrl = releaseTarballUrl(latestTag);
 
   step(`Downloading ${tarballUrl}...`);
   const dlResult = await run("curl", [
