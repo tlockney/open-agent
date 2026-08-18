@@ -34,6 +34,22 @@ jobs:
       - name: Run tests
         run: deno task test
 
+      # The release tarball is built from the tag, but the daemon and CLI
+      # report the version from src/lib/version.ts. If they disagree, the
+      # shipped binary lies about its version — fail the tag before it ships.
+      - name: Verify version matches tag
+        run: |
+          VERSION=$(sed -n 's/export const VERSION = "\(.*\)";/\1/p' src/lib/version.ts)
+          if [ -z "$VERSION" ]; then
+            echo "could not read VERSION from src/lib/version.ts" >&2
+            exit 1
+          fi
+          if [ "v${VERSION}" != "${GITHUB_REF_NAME}" ]; then
+            echo "version.ts says ${VERSION} but the tag is ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          echo "version ${VERSION} matches tag ${GITHUB_REF_NAME}"
+
   # The daemon is the artifact being published, so exercise it for real
   # before a tag ships.
   integration:
