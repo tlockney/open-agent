@@ -12,6 +12,7 @@ import { CliError, parseRaCommand } from "./args.ts";
 import {
   fail,
   formatErrorMessage,
+  HOME,
   HOST,
   HOST_IDENTITY_HELP,
   send,
@@ -29,6 +30,7 @@ Commands:
   mounts            List active mounts and their state
   reset [host]      Tear down all mounts (or just one) and purge sessions
   doctor            Full diagnostic: transport, daemon, per-mount probes
+  logs [-f]         Tail the daemon log (local only; -f follows)
   help              Show this help`;
 
 let parsed: ReturnType<typeof parseRaCommand>;
@@ -59,6 +61,9 @@ switch (parsed.command) {
     break;
   case "doctor":
     await runDoctor();
+    break;
+  case "logs":
+    await runLogs(parsed.follow ?? false);
     break;
 }
 
@@ -248,4 +253,30 @@ async function runDoctor(): Promise<void> {
     }
     console.log(`  ${tag} ${host}: ${info.mountPoint} (${detail})`);
   }
+}
+
+/**
+ * Tail the daemon's own log file.
+ *
+ * This is a local-only operation: the log lives on the daemon host under
+ * `~/.local/share/open-agent/agent.log`, so it is read directly rather than
+ * through the transport. `-f` streams new lines as they are written, which is
+ * the useful mode when watching a mount or a failing request live.
+ */
+async function runLogs(follow: boolean): Promise<void> {
+  const logPath = `${HOME}/.local/share/open-agent/agent.log`;
+  if (!existsSync(logPath)) {
+    fail(
+      `no daemon log at ${logPath}\n` +
+        `  → Is the daemon installed on this machine? 'ra logs' reads the local log.`,
+    );
+  }
+  const args = follow ? ["-f", "-n", "50", logPath] : ["-n", "50", logPath];
+  const { code } = await new Deno.Command("tail", {
+    args,
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  }).output();
+  Deno.exit(code);
 }

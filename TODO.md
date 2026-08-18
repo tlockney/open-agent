@@ -3,16 +3,6 @@
 Follow-ons to the robustness rework (commits `29d2ed5`..`e8b5216`). All
 optional — the daemon and `ra` tooling work without these.
 
-## `ra logs [-f]`
-
-Tail the launchd-managed daemon log so users don't have to remember the
-path.
-
-- launchd writes stdout to `$AGENT_DIR/launchd-stdout.log` and stderr to
-  `$AGENT_DIR/launchd-stderr.log` (see `com.open-agent.daemon.plist`).
-- CLI shape: `ra logs` prints last N lines, `ra logs -f` streams.
-- Implementation can shell out to `tail`; no new daemon action needed.
-
 ## Optional opt-in background heartbeat
 
 The current self-healing is request-driven (covered by step 3 of the

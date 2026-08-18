@@ -293,11 +293,17 @@ export function parseEnvLine(line: string): EnvLine | null {
 
 // --- ra ---
 
-export type RaSubcommand = "ping" | "status" | "mounts" | "reset" | "doctor";
+export type RaSubcommand =
+  | "ping"
+  | "status"
+  | "mounts"
+  | "reset"
+  | "doctor"
+  | "logs";
 
 export type ParsedRa =
   | { kind: "help" }
-  | { kind: "run"; command: RaSubcommand; host?: string };
+  | { kind: "run"; command: RaSubcommand; host?: string; follow?: boolean };
 
 /**
  * Parse the `ra <command> [args]` subcommand. An empty/help subcommand yields
@@ -318,6 +324,12 @@ export function parseRaCommand(argv: string[]): ParsedRa {
       return argv[1] !== undefined
         ? { kind: "run", command: "reset", host: argv[1] }
         : { kind: "run", command: "reset" };
+    case "logs":
+      return {
+        kind: "run",
+        command: "logs",
+        follow: argv.includes("-f") || argv.includes("--follow"),
+      };
     default:
       throw new CliError(`unknown command: ${sub}`);
   }
