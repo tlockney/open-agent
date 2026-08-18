@@ -1,6 +1,6 @@
 {
   "tasks": {
-    "test": "deno test --allow-read --allow-env",
+    "test": "deno test --allow-read --allow-write --allow-env",
     "test:integration": "OA_INTEGRATION=1 deno test --allow-all integration/",
     "check": "deno check src/ integration/",
     "lint": "deno lint",

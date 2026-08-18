@@ -120,8 +120,9 @@ because it is what makes the project testable without sockets or mounts:
   `Deno.stat`, and timers. It is the composition root and holds no logic.
 
 `*_test.ts` files sit next to their subjects. `deno task test` runs them with
-only `--allow-read --allow-env`, which is possible precisely because nothing
-under test touches the network or spawns processes.
+`--allow-read --allow-write --allow-env`, which is possible precisely because
+nothing under test touches the network or spawns processes. (`--allow-write`
+is needed only by the logger test, which rotates a log in a scratch temp dir.)
 
 That restriction is also the limit of what unit tests can see, so `integration/`
 covers the rest: it starts the real daemon against a scratch `HOME` and drives
