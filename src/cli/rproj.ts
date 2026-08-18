@@ -780,7 +780,7 @@ Host ${entry.alias}
   console.log("# The hook resolves host identity in this order:");
   console.log("#   1. OPEN_AGENT_HOST env var (via SetEnv/AcceptEnv)");
   console.log("#   2. ~/.config/open-agent/identity file");
-  console.log("#   3. $(hostname -s) fallback");
+  console.log("#   (no hostname fallback — identity must be configured)");
 }
 
 async function cmdOpen(arg: string): Promise<void> {
