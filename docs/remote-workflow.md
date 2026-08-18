@@ -123,7 +123,7 @@ ssh -O exit workmbp
 
 ### Step 3: Set Up Host Identity on Each Remote
 
-The remote needs to know its SSH alias so the `r*` commands send the correct host identifier. There are three ways (checked in this order):
+The remote needs to know its SSH alias so the `r*` commands send the correct host identifier. There are two ways (checked in this order):
 
 #### Option A: Identity file (recommended — no server config needed)
 
@@ -147,10 +147,6 @@ AcceptEnv OPEN_AGENT_HOST
 ```
 
 Then restart sshd.
-
-#### Option C: Hostname fallback
-
-If the SSH alias matches the remote's short hostname (`hostname -s`), no config is needed. The hook falls back to `$(hostname -s)` automatically.
 
 ### Step 4: Deploy Remote Scripts
 
