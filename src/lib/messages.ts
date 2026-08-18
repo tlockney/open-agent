@@ -4,47 +4,65 @@
 
 // --- Message types ---
 
+/**
+ * Optional shared secret carried on any message. The daemon requires it for
+ * non-loopback connections (see src/daemon/auth.ts); loopback connections
+ * (the SSH-tunnel path) never need it.
+ */
+export interface MessageAuth {
+  token?: string;
+}
+
 export type Message =
-  | {
+  | (MessageAuth & {
     action: "open";
     host: string;
     remoteHome: string;
     path: string;
     app?: string;
-  }
-  | { action: "open-vscode"; host: string; path: string }
-  | { action: "connect"; host: string; remoteHome: string; sessionId: string }
-  | { action: "disconnect"; host: string; sessionId: string }
-  | { action: "copy"; content: string }
-  | { action: "paste" }
-  | {
+  })
+  | (MessageAuth & { action: "open-vscode"; host: string; path: string })
+  | (MessageAuth & {
+    action: "connect";
+    host: string;
+    remoteHome: string;
+    sessionId: string;
+  })
+  | (MessageAuth & { action: "disconnect"; host: string; sessionId: string })
+  | (MessageAuth & { action: "copy"; content: string })
+  | (MessageAuth & { action: "paste" })
+  | (MessageAuth & {
     action: "notify";
     title: string;
     message?: string;
     subtitle?: string;
     sound?: string;
-  }
-  | { action: "open-url"; url: string }
-  | {
+  })
+  | (MessageAuth & { action: "open-url"; url: string })
+  | (MessageAuth & {
     action: "push";
     host: string;
     remoteHome: string;
     path: string;
     dest?: string;
-  }
-  | {
+  })
+  | (MessageAuth & {
     action: "pull";
     host: string;
     remoteHome: string;
     localPath: string;
     remoteDest: string;
-  }
-  | { action: "op-read"; ref: string; account?: string }
-  | { action: "op-resolve"; refs: Record<string, string>; account?: string }
-  | { action: "status" }
-  | { action: "ping" }
-  | { action: "reset"; host?: string }
-  | { action: "doctor" };
+  })
+  | (MessageAuth & { action: "op-read"; ref: string; account?: string })
+  | (MessageAuth & {
+    action: "op-resolve";
+    refs: Record<string, string>;
+    account?: string;
+  })
+  | (MessageAuth & { action: "status" })
+  | (MessageAuth & { action: "ping" })
+  | (MessageAuth & { action: "reset"; host?: string })
+  | (MessageAuth & { action: "doctor" });
 
 // --- Response types ---
 

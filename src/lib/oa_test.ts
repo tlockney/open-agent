@@ -4,6 +4,7 @@ import {
   formatErrorMessage,
   FORWARDED_SOCK,
   getStringField,
+  isLoopbackHost,
   isRemoteSession,
   resolveHostIdentity,
   send,
@@ -214,4 +215,17 @@ Deno.test("defaultSockPath: local uses the daemon's own socket, not /tmp", () =>
     defaultSockPath("/Users/thomas", false),
     "/Users/thomas/.local/share/open-agent/open-agent.sock",
   );
+});
+
+// --- isLoopbackHost ---
+
+Deno.test("isLoopbackHost: loopback names are local", () => {
+  assertEquals(isLoopbackHost("127.0.0.1"), true);
+  assertEquals(isLoopbackHost("::1"), true);
+  assertEquals(isLoopbackHost("localhost"), true);
+});
+
+Deno.test("isLoopbackHost: non-loopback hosts are not local", () => {
+  assertEquals(isLoopbackHost("10.0.0.5"), false);
+  assertEquals(isLoopbackHost("macbook.tailnet.ts.net"), false);
 });

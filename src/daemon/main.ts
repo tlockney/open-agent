@@ -14,6 +14,7 @@ import { createRealDeps, MountManager } from "./mount_manager.ts";
 import { closeLog, initLog, log } from "./logger.ts";
 import { handleMessage, type HandlerDeps } from "./handlers.ts";
 import { acceptConnections } from "./accept.ts";
+import { checkAuth, loadOrCreateToken } from "./auth.ts";
 import { VERSION } from "../lib/version.ts";
 
 const HOME = Deno.env.get("HOME");
@@ -23,7 +24,10 @@ if (!HOME) {
 }
 const AGENT_DIR = `${HOME}/.local/share/open-agent`;
 const SOCKET_PATH = `${AGENT_DIR}/open-agent.sock`;
-const TCP_HOST = "127.0.0.1";
+// The TCP listener binds here. Loopback by default (trust-the-tunnel); set
+// OPEN_AGENT_BIND to a Tailscale IP or 0.0.0.0 to accept direct connections,
+// which then require the shared token (see auth.ts).
+const TCP_HOST = Deno.env.get("OPEN_AGENT_BIND") ?? "127.0.0.1";
 const TCP_PORT = 19876;
 const TCP_BIND_ATTEMPTS = 3;
 const TCP_BIND_RETRY_MS = 500;
@@ -31,6 +35,8 @@ const MOUNT_BASE = `${HOME}/.remote-mounts`;
 const LOG_PATH = `${AGENT_DIR}/agent.log`;
 const STATE_PATH = `${AGENT_DIR}/mounts.json`;
 const UNMOUNT_GRACE_MS = 30_000; // 30s after last session disconnects
+const XDG_CONFIG = Deno.env.get("XDG_CONFIG_HOME") ?? `${HOME}/.config`;
+const OA_CONFIG_DIR = `${XDG_CONFIG}/open-agent`;
 
 // --- Wiring ---
 
@@ -77,7 +83,10 @@ const handlerDeps: HandlerDeps = {
 
 // --- Socket server ---
 
-async function handleConnection(conn: Deno.Conn): Promise<void> {
+async function handleConnection(
+  conn: Deno.Conn,
+  authToken: string,
+): Promise<void> {
   log(`Connection received from ${conn.remoteAddr?.transport ?? "unknown"}`);
   try {
     let raw: string;
@@ -108,6 +117,19 @@ async function handleConnection(conn: Deno.Conn): Promise<void> {
       const err = JSON.stringify({
         ok: false,
         error: `Bad request: ${e instanceof Error ? e.message : e}`,
+      });
+      await writeMessage(conn, err);
+      return;
+    }
+
+    // Non-loopback connections must present the shared token. Loopback (the
+    // SSH-tunnel path) is trusted and needs none.
+    const authError = checkAuth(conn.remoteAddr, msg.token, authToken);
+    if (authError) {
+      log(`Rejected unauthenticated connection from ${conn.remoteAddr}`);
+      const err = JSON.stringify({
+        ok: false,
+        error: { code: "auth_failed", message: authError },
       });
       await writeMessage(conn, err);
       return;
@@ -155,6 +177,11 @@ async function main(): Promise<void> {
   await initLog(AGENT_DIR, LOG_PATH);
   await Deno.mkdir(AGENT_DIR, { recursive: true });
   await Deno.mkdir(MOUNT_BASE, { recursive: true });
+  await Deno.mkdir(OA_CONFIG_DIR, { recursive: true });
+
+  // Load (or create) the shared token before serving. It is required for
+  // non-loopback connections; loopback is trusted.
+  const authToken = await loadOrCreateToken(OA_CONFIG_DIR);
 
   // Reconcile any mounts that outlived the previous process before serving.
   await mountManager.restore();
@@ -191,9 +218,21 @@ async function main(): Promise<void> {
   Deno.addSignalListener("SIGINT", shutdown);
   Deno.addSignalListener("SIGTERM", shutdown);
 
-  const accepts = [acceptConnections(unixListener, handleConnection, log)];
+  const accepts = [
+    acceptConnections(
+      unixListener,
+      (conn) => handleConnection(conn, authToken),
+      log,
+    ),
+  ];
   if (tcpListener) {
-    accepts.push(acceptConnections(tcpListener, handleConnection, log));
+    accepts.push(
+      acceptConnections(
+        tcpListener,
+        (conn) => handleConnection(conn, authToken),
+        log,
+      ),
+    );
   }
   await Promise.all(accepts);
 
