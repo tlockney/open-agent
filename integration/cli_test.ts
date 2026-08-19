@@ -1,10 +1,12 @@
 // cli_test.ts — the r* commands driven end to end against a real daemon.
 //
-// This is the coverage that was missing. Files in src/cli/ execute at import
-// and call Deno.exit, so they cannot be imported by a unit test; running them
-// as subprocesses covers the whole path anyway — argument parsing, message
-// construction, transport, the daemon, and the rendering of the reply. The
-// `open-agent status` defect lived precisely in that last step.
+// This is the coverage that was missing. Files in src/cli/ used to execute at
+// import and call Deno.exit, so they could not be imported by a unit test;
+// running them as subprocesses covers the whole path anyway — argument
+// parsing, message construction, transport, the daemon, and the rendering of
+// the reply. The `open-agent status` defect lived precisely in that last step.
+// (The CLIs are now importable via `main(argv, deps)` — see ropen_test.ts —
+// but this suite still exercises the real wiring end to end.)
 
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
 import {

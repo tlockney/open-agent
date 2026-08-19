@@ -3,33 +3,28 @@
 // Usage: rpaste
 //        rpaste | vim -
 
-import {
-  checkResponse,
-  fail,
-  getStringField,
-  isRemoteSession,
-  requireSock,
-  send,
-} from "../lib/oa.ts";
+import { type CliDeps, realDeps } from "./deps.ts";
 
-if (!isRemoteSession()) {
-  // Local Mac — read the system clipboard directly.
-  const { code } = await new Deno.Command("pbpaste", {
-    stdout: "inherit",
-    stderr: "inherit",
-  }).output();
-  Deno.exit(code);
+export async function main(_argv: string[], deps: CliDeps): Promise<void> {
+  if (!deps.isRemoteSession()) {
+    // Local Mac — read the system clipboard directly.
+    deps.exit(await deps.exec("pbpaste", []));
+  }
+
+  deps.requireSock();
+
+  let response;
+  try {
+    response = await deps.send({ action: "paste" });
+  } catch (e) {
+    deps.fail(
+      `agent unreachable: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  deps.checkResponse(response);
+
+  const content = deps.getStringField(response, "content");
+  if (content) await deps.stdout.write(new TextEncoder().encode(content));
 }
 
-requireSock();
-
-let response;
-try {
-  response = await send({ action: "paste" });
-} catch (e) {
-  fail(`agent unreachable: ${e instanceof Error ? e.message : String(e)}`);
-}
-checkResponse(response);
-
-const content = getStringField(response, "content");
-if (content) await Deno.stdout.write(new TextEncoder().encode(content));
+if (import.meta.main) main(Deno.args, realDeps);

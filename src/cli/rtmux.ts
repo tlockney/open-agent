@@ -3,12 +3,12 @@
 
 import { dirname } from "jsr:@std/path@1/dirname";
 import { fromFileUrl } from "jsr:@std/path@1/from-file-url";
+import { type CliDeps, realDeps } from "./deps.ts";
 
 const scriptDir = dirname(fromFileUrl(import.meta.url));
-const { code } = await new Deno.Command(`${scriptDir}/rproj.ts`, {
-  args: ["tmux", ...Deno.args],
-  stdin: "inherit",
-  stdout: "inherit",
-  stderr: "inherit",
-}).output();
-Deno.exit(code);
+
+export async function main(argv: string[], deps: CliDeps): Promise<void> {
+  deps.exit(await deps.exec(`${scriptDir}/rproj.ts`, ["tmux", ...argv]));
+}
+
+if (import.meta.main) main(Deno.args, realDeps);

@@ -16,7 +16,6 @@
 
 import { blue, green, red, yellow } from "jsr:@std/fmt@1/colors";
 import { basename } from "jsr:@std/path@1/basename";
-import { existsSync } from "jsr:@std/fs@1/exists";
 import {
   buildFzfEntries,
   type HostEntry,
@@ -27,22 +26,20 @@ import {
   shellQuote,
   TERMINAL_RESTORE_SEQUENCE,
 } from "../lib/rproj_utils.ts";
-import { formatErrorMessage, send, SOCK } from "../lib/oa.ts";
+import { SOCK } from "../lib/oa.ts";
 import type { Message, Response } from "../lib/messages.ts";
+import { type CliDeps, realDeps } from "./deps.ts";
 
 // --- Constants ---
 
-const HOME = Deno.env.get("HOME") ?? "";
-if (!HOME) {
-  console.error("HOME environment variable is not set");
-  Deno.exit(1);
-}
-
-const XDG_CONFIG = Deno.env.get("XDG_CONFIG_HOME") ?? `${HOME}/.config`;
-const OA_CONFIG_DIR = `${XDG_CONFIG}/open-agent`;
-const LEGACY_CONFIG_DIR = `${XDG_CONFIG}/rproj`;
 const SCRIPT_NAME = "rproj";
 const SSH_TIMEOUT_MS = 5_000;
+
+// Effects and config paths are set in main() from the injected deps, so the
+// module is importable without executing anything at import time.
+let deps: CliDeps = realDeps;
+let OA_CONFIG_DIR = "";
+let LEGACY_CONFIG_DIR = "";
 
 // --- Logging (suppressed in JSON mode) ---
 
@@ -72,78 +69,10 @@ function error(msg: string): never {
         icon: { path: "error.png" },
       }],
     }));
-    Deno.exit(0);
+    deps.exit(0);
   }
   console.error(red(`Error: ${msg}`));
-  Deno.exit(1);
-}
-
-// --- Utilities ---
-
-interface RunResult {
-  success: boolean;
-  stdout: string;
-  stderr: string;
-  code: number;
-}
-
-async function run(
-  cmd: string,
-  args: string[],
-  opts?: {
-    timeout?: number;
-    stdin?: "inherit" | "null" | "piped";
-    input?: Uint8Array;
-  },
-): Promise<RunResult> {
-  const signal = opts?.timeout ? AbortSignal.timeout(opts.timeout) : undefined;
-  const command = new Deno.Command(cmd, {
-    args,
-    stdin: opts?.stdin ?? "null",
-    stdout: "piped",
-    stderr: "piped",
-  });
-  let child: Deno.CommandOutput;
-  try {
-    const proc = command.spawn();
-    if (signal) {
-      signal.addEventListener("abort", () => {
-        try {
-          proc.kill("SIGKILL");
-        } catch { /* already exited */ }
-      }, { once: true });
-    }
-    if (opts?.input) {
-      const writer = proc.stdin.getWriter();
-      await writer.write(opts.input);
-      await writer.close();
-    }
-    child = await proc.output();
-  } catch {
-    return {
-      success: false,
-      stdout: "",
-      stderr: "command timed out or failed",
-      code: 1,
-    };
-  }
-  return {
-    success: child.success,
-    stdout: new TextDecoder().decode(child.stdout).trim(),
-    stderr: new TextDecoder().decode(child.stderr).trim(),
-    code: child.code,
-  };
-}
-
-async function exec(cmd: string, args: string[]): Promise<never> {
-  const command = new Deno.Command(cmd, {
-    args,
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  const { code } = await command.output();
-  Deno.exit(code);
+  deps.exit(1);
 }
 
 // Run a child that takes over the TTY (e.g. ssh into a tmux session) and
@@ -155,11 +84,11 @@ async function execWithTtyRestore(
   cmd: string,
   args: string[],
 ): Promise<number> {
-  const isTty = Deno.stdin.isTerminal();
+  const isTty = deps.stdin.isTerminal();
 
   let savedStty: string | null = null;
   if (isTty) {
-    const r = await run("stty", ["-g"], { stdin: "inherit" });
+    const r = await deps.run("stty", ["-g"], { stdin: "inherit" });
     if (r.success) savedStty = r.stdout;
   }
 
@@ -207,10 +136,10 @@ async function execWithTtyRestore(
       } catch { /* no controlling tty — fall through to stdout */ }
       if (!wroteToTty) {
         try {
-          await Deno.stdout.write(bytes);
+          await deps.stdout.write(bytes);
         } catch { /* terminal already closed */ }
       }
-      await run("stty", [savedStty ?? "sane"], { stdin: "inherit" });
+      await deps.run("stty", [savedStty ?? "sane"], { stdin: "inherit" });
     }
   }
 }
@@ -232,7 +161,7 @@ async function agentSend(
   timeoutSec?: number,
 ): Promise<Response> {
   try {
-    return await send(message, timeoutSec);
+    return await deps.send(message, timeoutSec);
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     throw new Error(
@@ -248,10 +177,10 @@ const MOUNT_TIMEOUT_SEC = 30;
 
 function resolveHostsFile(): { path: string; isLegacy: boolean } {
   const canonical = `${OA_CONFIG_DIR}/remote-hosts`;
-  if (existsSync(canonical)) return { path: canonical, isLegacy: false };
+  if (deps.existsSync(canonical)) return { path: canonical, isLegacy: false };
 
   const legacy = `${LEGACY_CONFIG_DIR}/hosts`;
-  if (existsSync(legacy)) {
+  if (deps.existsSync(legacy)) {
     warn(`Using legacy config at ${legacy} — move to ${canonical}`);
     return { path: legacy, isLegacy: true };
   }
@@ -264,8 +193,8 @@ function loadHosts(hostFilter: string | null): HostEntry[] {
 
   let hosts: HostEntry[] = [];
 
-  if (existsSync(hostsPath)) {
-    const text = Deno.readTextFileSync(hostsPath);
+  if (deps.existsSync(hostsPath)) {
+    const text = deps.readTextFileSync(hostsPath);
     for (const line of text.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) continue;
@@ -276,8 +205,8 @@ function loadHosts(hostFilter: string | null): HostEntry[] {
   } else {
     // Try legacy single-host config
     const legacyConfig = `${LEGACY_CONFIG_DIR}/config`;
-    if (existsSync(legacyConfig)) {
-      const text = Deno.readTextFileSync(legacyConfig);
+    if (deps.existsSync(legacyConfig)) {
+      const text = deps.readTextFileSync(legacyConfig);
       let host = "workmbp";
       let dir = "";
       for (const line of text.split("\n")) {
@@ -326,7 +255,7 @@ const SSH_DISCOVERY_OPTS = [
 ];
 
 async function sshTestDir(host: string, path: string): Promise<boolean> {
-  const result = await run("ssh", [
+  const result = await deps.run("ssh", [
     ...SSH_DISCOVERY_OPTS,
     host,
     `test -d ${shellQuote(path)}`,
@@ -336,7 +265,7 @@ async function sshTestDir(host: string, path: string): Promise<boolean> {
 
 async function sshListDirs(host: string, dir: string): Promise<string[]> {
   debug(`sshListDirs: ${host}:${dir}`);
-  const result = await run("ssh", [
+  const result = await deps.run("ssh", [
     ...SSH_DISCOVERY_OPTS,
     host,
     `find ${
@@ -355,7 +284,7 @@ async function sshListDirs(host: string, dir: string): Promise<string[]> {
 }
 
 async function sshGetHome(host: string): Promise<string> {
-  const result = await run("ssh", [
+  const result = await deps.run("ssh", [
     "-o",
     "BatchMode=yes",
     "-o",
@@ -422,7 +351,7 @@ async function fzfSelect(
   ];
   if (opts.preview) args.push(`--preview=${opts.preview}`);
 
-  const result = await run("fzf", args, {
+  const result = await deps.run("fzf", args, {
     stdin: "piped",
     input: new TextEncoder().encode(input),
   });
@@ -434,7 +363,7 @@ async function fzfSelectSimple(
   items: string[],
   opts: { prompt: string; header: string; height?: string },
 ): Promise<string | null> {
-  const result = await run("fzf", [
+  const result = await deps.run("fzf", [
     "--height=" + (opts.height ?? "30%"),
     "--layout=reverse",
     "--border",
@@ -466,7 +395,7 @@ async function selectProject(
 
   if (!selected) {
     console.log("Cancelled.");
-    Deno.exit(0);
+    deps.exit(0);
   }
 
   const meta = selected.split("\t")[0];
@@ -511,7 +440,7 @@ async function resolveProjectOnHost(
   });
   if (!selection) {
     console.log("Cancelled.");
-    Deno.exit(0);
+    deps.exit(0);
   }
   return { host: hostAlias, path: selection };
 }
@@ -557,7 +486,7 @@ async function resolveProjectAcrossHosts(
   });
   if (!selected) {
     console.log("Cancelled.");
-    Deno.exit(0);
+    deps.exit(0);
   }
   const selectedHost = selected.split("\t")[0];
   return matches.find((m) => m.host === selectedHost)!;
@@ -666,14 +595,14 @@ async function cmdTmux(opts: Opts): Promise<void> {
     "ssh",
     ["-A", "-t", host, `cd ${shellQuote(path)} && ~/bin/tc`],
   );
-  Deno.exit(code);
+  deps.exit(code);
 }
 
 async function cmdCode(opts: Opts): Promise<void> {
   const hosts = loadHosts(opts.hostFilter);
   const { host, path } = await getProjectSelection(hosts, opts);
   success(`Opening ${path} in VS Code on ${host}...`);
-  await exec("code", ["--remote", `ssh-remote+${host}`, path]);
+  deps.exit(await deps.exec("code", ["--remote", `ssh-remote+${host}`, path]));
 }
 
 async function cmdFinder(opts: Opts): Promise<void> {
@@ -694,7 +623,7 @@ async function cmdFinder(opts: Opts): Promise<void> {
       success(`Opened: ${response.localPath}`);
     }
   } else {
-    error(formatErrorMessage(response.error));
+    error(deps.formatErrorMessage(response.error));
   }
 }
 
@@ -704,7 +633,7 @@ async function cmdDefault(opts: Opts): Promise<void> {
   const projectDisplay = basename(path);
 
   const actions = ["tmux", "code"];
-  if (existsSync(SOCK)) actions.push("finder");
+  if (deps.existsSync(SOCK)) actions.push("finder");
 
   const action = await fzfSelectSimple(actions, {
     prompt: "Action: ",
@@ -712,7 +641,7 @@ async function cmdDefault(opts: Opts): Promise<void> {
   });
   if (!action) {
     console.log("Cancelled.");
-    Deno.exit(0);
+    deps.exit(0);
   }
 
   switch (action) {
@@ -723,12 +652,14 @@ async function cmdDefault(opts: Opts): Promise<void> {
         "ssh",
         ["-A", "-t", host, `cd ${shellQuote(path)} && ~/bin/tc`],
       );
-      Deno.exit(code);
+      deps.exit(code);
     }
-    // falls through (unreachable): Deno.exit() above never returns
+    // falls through (unreachable): deps.exit() above never returns
     case "code":
       success(`Opening ${path} in VS Code...`);
-      await exec("code", ["--remote", `ssh-remote+${host}`, path]);
+      deps.exit(
+        await deps.exec("code", ["--remote", `ssh-remote+${host}`, path]),
+      );
       break;
     case "finder": {
       info("Resolving remote home directory...");
@@ -741,7 +672,7 @@ async function cmdDefault(opts: Opts): Promise<void> {
       if (response.ok && typeof response.localPath === "string") {
         success(`Opened: ${response.localPath}`);
       } else if (!response.ok) {
-        error(formatErrorMessage(response.error));
+        error(deps.formatErrorMessage(response.error));
       }
       break;
     }
@@ -789,12 +720,12 @@ async function cmdOpen(arg: string): Promise<void> {
   const host = arg.substring(0, pipeIdx);
   const path = arg.substring(pipeIdx + 1);
   if (!host || !path) error("Invalid argument format. Expected 'host|path'");
-  await exec("code", ["--remote", `ssh-remote+${host}`, path]);
+  deps.exit(await deps.exec("code", ["--remote", `ssh-remote+${host}`, path]));
 }
 
 async function sshPreview(host: string, path: string): Promise<void> {
   const p = shellQuote(path);
-  const result = await run("ssh", [
+  const result = await deps.run("ssh", [
     "-o",
     "ConnectTimeout=2",
     host,
@@ -872,8 +803,19 @@ Examples:
 
 // --- Main ---
 
-async function main(): Promise<void> {
-  const { command, debug } = parseArgs([...Deno.args]);
+export async function main(argv: string[], depsArg: CliDeps): Promise<void> {
+  deps = depsArg;
+
+  const home = deps.env.get("HOME") ?? "";
+  if (!home) {
+    console.error("HOME environment variable is not set");
+    deps.exit(1);
+  }
+  const xdgConfig = deps.env.get("XDG_CONFIG_HOME") ?? `${home}/.config`;
+  OA_CONFIG_DIR = `${xdgConfig}/open-agent`;
+  LEGACY_CONFIG_DIR = `${xdgConfig}/rproj`;
+
+  const { command, debug } = parseArgs([...argv]);
   if (debug) debugMode = true;
 
   // Set JSON mode globally for logging
@@ -915,19 +857,21 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
-  const msg = err instanceof Error ? err.message : String(err);
-  if (jsonMode) {
-    console.log(JSON.stringify({
-      items: [{
-        title: "Error",
-        subtitle: msg,
-        valid: false,
-        icon: { path: "error.png" },
-      }],
-    }));
-    Deno.exit(0);
-  }
-  console.error(red(`Error: ${msg}`));
-  Deno.exit(1);
-});
+if (import.meta.main) {
+  main(Deno.args, realDeps).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (jsonMode) {
+      console.log(JSON.stringify({
+        items: [{
+          title: "Error",
+          subtitle: msg,
+          valid: false,
+          icon: { path: "error.png" },
+        }],
+      }));
+      Deno.exit(0);
+    }
+    console.error(red(`Error: ${msg}`));
+    Deno.exit(1);
+  });
+}

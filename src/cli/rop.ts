@@ -11,14 +11,7 @@ import {
   parseReadRef,
   splitRunArgs,
 } from "./args.ts";
-import {
-  checkResponse,
-  fail,
-  getStringField,
-  isRemoteSession,
-  requireSock,
-  send,
-} from "../lib/oa.ts";
+import { type CliDeps, realDeps } from "./deps.ts";
 
 const USAGE = `Usage: rop [--account <account>] <subcommand> [options]
 
@@ -38,90 +31,94 @@ Examples:
   rop run --env-file .env -- terraform apply
   rop run --env-file .env --env-file .env.local -- make test`;
 
-if (Deno.args.length === 0) {
-  console.log(USAGE);
-  Deno.exit(0);
-}
-
-// Parse global options (can appear anywhere before or after subcommand)
-let account: string | undefined;
-let filtered: string[];
-try {
-  const globals = extractAccount(Deno.args);
-  account = globals.account;
-  filtered = globals.rest;
-} catch (e) {
-  if (e instanceof CliError) fail(e.message);
-  throw e;
-}
-
-const subcmd = filtered[0];
-const isHelp = subcmd === "-h" || subcmd === "--help" || subcmd === "help";
-
-if (!isHelp && !isRemoteSession()) {
-  // Local Mac — the real `op` CLI is available, so delegate verbatim. op
-  // does its own op:// resolution; --account passes straight through.
-  // Help still falls through to rop's own USAGE below.
-  const { code } = await new Deno.Command("op", {
-    args: Deno.args,
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-  }).output();
-  Deno.exit(code);
-}
-
-if (!isHelp) {
-  requireSock();
-}
-const rest = filtered.slice(1);
-
-switch (subcmd) {
-  case "read":
-    await cmdRead(rest);
-    break;
-  case "run":
-    await cmdRun(rest);
-    break;
-  case "-h":
-  case "--help":
-  case "help":
+export async function main(argv: string[], deps: CliDeps): Promise<void> {
+  if (argv.length === 0) {
     console.log(USAGE);
-    break;
-  default:
-    fail(`unknown subcommand: ${subcmd}. See rop --help`);
+    deps.exit(0);
+  }
+
+  // Parse global options (can appear anywhere before or after subcommand)
+  let account: string | undefined;
+  let filtered: string[];
+  try {
+    const globals = extractAccount(argv);
+    account = globals.account;
+    filtered = globals.rest;
+  } catch (e) {
+    if (e instanceof CliError) deps.fail(e.message);
+    throw e;
+  }
+
+  const subcmd = filtered[0];
+  const isHelp = subcmd === "-h" || subcmd === "--help" || subcmd === "help";
+
+  if (!isHelp && !deps.isRemoteSession()) {
+    // Local Mac — the real `op` CLI is available, so delegate verbatim. op
+    // does its own op:// resolution; --account passes straight through.
+    // Help still falls through to rop's own USAGE below.
+    deps.exit(await deps.exec("op", argv));
+  }
+
+  if (!isHelp) {
+    deps.requireSock();
+  }
+  const rest = filtered.slice(1);
+
+  switch (subcmd) {
+    case "read":
+      await cmdRead(rest, account, deps);
+      break;
+    case "run":
+      await cmdRun(rest, account, deps);
+      break;
+    case "-h":
+    case "--help":
+    case "help":
+      console.log(USAGE);
+      break;
+    default:
+      deps.fail(`unknown subcommand: ${subcmd}. See rop --help`);
+  }
 }
 
 // --- Subcommand: read ---
 
-async function cmdRead(args: string[]): Promise<void> {
+async function cmdRead(
+  args: string[],
+  account: string | undefined,
+  deps: CliDeps,
+): Promise<void> {
   let ref: string;
   try {
     ref = parseReadRef(args);
   } catch (e) {
-    if (e instanceof CliError) fail(e.message);
+    if (e instanceof CliError) deps.fail(e.message);
     throw e;
   }
 
-  const response = await send({
+  const response = await deps.send({
     action: "op-read",
     ref,
     ...(account && { account }),
   }, 30);
-  checkResponse(response);
-  const value = getStringField(response, "value");
-  await Deno.stdout.write(new TextEncoder().encode(value));
+  deps.checkResponse(response);
+  const value = deps.getStringField(response, "value");
+  await deps.stdout.write(new TextEncoder().encode(value));
 }
 
 // --- Subcommand: run ---
 
-async function cmdRun(args: string[]): Promise<void> {
+async function cmdRun(
+  args: string[],
+  account: string | undefined,
+  deps: CliDeps,
+): Promise<void> {
   let envFiles: string[];
   let cmdArgs: string[];
   try {
     ({ envFiles, cmdArgs } = splitRunArgs(args));
   } catch (e) {
-    if (e instanceof CliError) fail(e.message);
+    if (e instanceof CliError) deps.fail(e.message);
     throw e;
   }
 
@@ -132,9 +129,9 @@ async function cmdRun(args: string[]): Promise<void> {
   for (const file of envFiles) {
     let text: string;
     try {
-      text = Deno.readTextFileSync(file);
+      text = deps.readTextFileSync(file);
     } catch {
-      fail(`env file not found: ${file}`);
+      deps.fail(`env file not found: ${file}`);
     }
     for (const line of text.split("\n")) {
       const parsed = parseEnvLine(line);
@@ -148,7 +145,7 @@ async function cmdRun(args: string[]): Promise<void> {
   }
 
   // Also scan current environment for op:// values
-  for (const [key, val] of Object.entries(Deno.env.toObject())) {
+  for (const [key, val] of Object.entries(deps.env.toObject())) {
     if (val.startsWith("op://")) {
       refs[key] = val;
     }
@@ -158,31 +155,24 @@ async function cmdRun(args: string[]): Promise<void> {
   if (Object.keys(refs).length === 0) {
     // Set non-op env vars and exec
     for (const [k, v] of Object.entries(envVars)) {
-      Deno.env.set(k, v);
+      deps.env.set(k, v);
     }
-    const { code } = await new Deno.Command(cmdArgs[0], {
-      args: cmdArgs.slice(1),
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
-      env: Deno.env.toObject(),
-    }).output();
-    Deno.exit(code);
+    deps.exit(await deps.exec(cmdArgs[0], cmdArgs.slice(1)));
   }
 
   // Resolve op:// references via the agent
-  const response = await send({
+  const response = await deps.send({
     action: "op-resolve",
     refs,
     ...(account && { account }),
   }, 30);
-  checkResponse(response);
+  deps.checkResponse(response);
 
   const resolved = response.resolved as Record<string, string> | undefined ??
     {};
 
   // Build environment with resolved values
-  const finalEnv = Deno.env.toObject();
+  const finalEnv = deps.env.toObject();
   for (const [k, v] of Object.entries(envVars)) {
     finalEnv[k] = v;
   }
@@ -191,12 +181,7 @@ async function cmdRun(args: string[]): Promise<void> {
   }
 
   // Run the command
-  const { code } = await new Deno.Command(cmdArgs[0], {
-    args: cmdArgs.slice(1),
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-    env: finalEnv,
-  }).output();
-  Deno.exit(code);
+  deps.exit(await deps.exec(cmdArgs[0], cmdArgs.slice(1), finalEnv));
 }
+
+if (import.meta.main) main(Deno.args, realDeps);
