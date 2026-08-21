@@ -17,6 +17,17 @@ export const REMOTE_COMMANDS = [
 ] as const;
 
 /**
+ * Shared modules under src/cli/ that the remote commands import.
+ *
+ * These are not commands, so they get no wrapper — but they must ship in the
+ * deploy tarball or every command that imports them dies with "Module not
+ * found" on the remote. The deploy_test coverage test derives the required
+ * entries from the commands' actual imports, so a refactor that adds a module
+ * without listing it here fails in CI instead of on the next setup-remote.
+ */
+export const SHARED_CLI_MODULES = ["args", "deps"] as const;
+
+/**
  * Commands that only make sense on a machine running the daemon.
  *
  * `setup-remote` does not deploy these, but it must not remove them either.

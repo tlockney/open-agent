@@ -3,6 +3,7 @@ import {
   buildDeployScript,
   HOST_ONLY_COMMANDS,
   REMOTE_COMMANDS,
+  SHARED_CLI_MODULES,
 } from "./deploy.ts";
 
 // The property that matters. An earlier version of this script did
@@ -91,4 +92,24 @@ Deno.test("deploy script aborts on the first failure", () => {
 Deno.test("deploy script honours a custom command list", () => {
   const script = buildDeployScript(["ropen", "ra"]);
   assertStringIncludes(script, "for cmd in ropen ra");
+});
+
+// setup-remote packages src/cli/ file-by-file, so a shared module a command
+// imports but SHARED_CLI_MODULES omits ships importers without the import —
+// every r* command on the remote then dies with "Module not found". (This
+// happened when deps.ts was added: remotes got the new ropen.ts without it.)
+Deno.test("every ./ import of a shipped CLI script is itself shipped", () => {
+  const cliDir = new URL("../cli/", import.meta.url);
+  const shipped = new Set<string>([...REMOTE_COMMANDS, ...SHARED_CLI_MODULES]);
+  for (const name of shipped) {
+    const source = Deno.readTextFileSync(new URL(`${name}.ts`, cliDir));
+    for (const match of source.matchAll(/from "\.\/([^"]+)\.ts"/g)) {
+      assertEquals(
+        shipped.has(match[1]),
+        true,
+        `${name}.ts imports ./${match[1]}.ts, which setup-remote does not ` +
+          "deploy — add it to SHARED_CLI_MODULES in deploy.ts",
+      );
+    }
+  }
 });

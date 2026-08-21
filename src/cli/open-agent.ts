@@ -10,7 +10,11 @@
 
 import { blue, green, red, yellow } from "jsr:@std/fmt@1/colors";
 import { VERSION } from "../lib/version.ts";
-import { buildDeployScript, REMOTE_COMMANDS } from "../lib/deploy.ts";
+import {
+  buildDeployScript,
+  REMOTE_COMMANDS,
+  SHARED_CLI_MODULES,
+} from "../lib/deploy.ts";
 import { type CliDeps, realDeps } from "./deps.ts";
 
 const REPO_OWNER = "tlockney";
@@ -156,8 +160,7 @@ async function cmdSetupRemote(ctx: Ctx, target: string): Promise<void> {
 
   // Shared CLI modules the remote scripts import (not commands themselves,
   // so they must not appear in remoteScripts / the wrapper symlink list)
-  const sharedCliModules = ["args"];
-  for (const mod of sharedCliModules) {
+  for (const mod of SHARED_CLI_MODULES) {
     await deps.copyFile(
       `${SCRIPT_DIR}/${mod}.ts`,
       `${tmpDir}/src/cli/${mod}.ts`,
