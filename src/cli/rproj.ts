@@ -19,6 +19,7 @@ import { basename } from "jsr:@std/path@1/basename";
 import {
   buildFzfEntries,
   type HostEntry,
+  isAbsoluteProjectPath,
   type Opts,
   parseArgs,
   type ProjectEntry,
@@ -34,6 +35,14 @@ import { type CliDeps, realDeps } from "./deps.ts";
 
 const SCRIPT_NAME = "rproj";
 const SSH_TIMEOUT_MS = 5_000;
+
+/**
+ * Conventional project roots probed on an unconfigured host. The first one
+ * that exists becomes the base dir for discovery; the rest are ignored.
+ * `$HOME` is resolved remotely so `~/src` works regardless of the local
+ * username.
+ */
+const DEFAULT_PROJECT_ROOTS = ["~/src", "~/code", "~/projects", "~/dev"];
 
 // Effects and config paths are set in main() from the injected deps, so the
 // module is importable without executing anything at import time.
@@ -188,7 +197,7 @@ function resolveHostsFile(): { path: string; isLegacy: boolean } {
   return { path: canonical, isLegacy: false };
 }
 
-function loadHosts(hostFilter: string | null): HostEntry[] {
+async function loadHosts(hostFilter: string | null): Promise<HostEntry[]> {
   const { path: hostsPath } = resolveHostsFile();
 
   let hosts: HostEntry[] = [];
@@ -234,11 +243,106 @@ function loadHosts(hostFilter: string | null): HostEntry[] {
 
   if (hostFilter) {
     hosts = hosts.filter((h) => h.alias === hostFilter);
-    if (hosts.length === 0) error(`No entries found for host: ${hostFilter}`);
+    if (hosts.length === 0) {
+      // The host is not configured. Synthesize an entry by probing the
+      // remote for conventional project roots — this is what makes
+      // `rproj tmux somehost:proj` work against arbitrary hosts.
+      hosts = [await synthesizeHost(hostFilter)];
+    }
     debug(`Filtered to host '${hostFilter}': ${hosts.length} entries`);
   }
 
   return hosts;
+}
+
+/**
+ * Build a HostEntry for a host that is not in the config file, by probing
+ * conventional project roots on the remote. The first root that exists
+ * becomes the base dir; the rest are ignored.
+ *
+ * This is deliberately a probe, not a guess: an unreachable host or one with
+ * none of the conventional roots fails with a clear message instead of
+ * silently producing an empty project list.
+ */
+async function synthesizeHost(host: string): Promise<HostEntry> {
+  debug(`Host '${host}' not in config — probing remote for project roots`);
+  // Resolve the remote home first: `~/` cannot be quoted in an SSH command
+  // (the remote shell would not expand it), and every downstream probe and
+  // discovery command quotes paths. Absolute paths work everywhere.
+  const home = await sshGetHome(host);
+  for (const root of DEFAULT_PROJECT_ROOTS) {
+    const abs = root.startsWith("~/") ? `${home}/${root.slice(2)}` : root;
+    if (await sshTestPath(host, abs)) {
+      debug(`Found project root ${abs} on ${host}`);
+      return { alias: host, dir: abs, label: host };
+    }
+  }
+  error(
+    `Host '${host}' is not in ${OA_CONFIG_DIR}/remote-hosts and no ` +
+      `conventional project root (${DEFAULT_PROJECT_ROOTS.join(", ")}) was ` +
+      `found on it. Add it to the hosts file, or use 'host:/abs/path' to ` +
+      `open a specific directory.`,
+  );
+}
+
+/**
+ * Ensure the remote has the open-agent client toolkit, offering to deploy
+ * it when missing. Returns true when the toolkit is present (or was just
+ * deployed); false when the user declined.
+ *
+ * The deploy reuses `open-agent setup-remote <host>` — the same additive
+ * overlay that ships the r* wrappers and the shell hook. It never removes
+ * anything on the remote. After the deploy, the identity file is written
+ * and the hook is wired into the remote's rc file, so the next SSH session
+ * registers with the daemon automatically.
+ */
+async function ensureRemoteToolkit(host: string): Promise<boolean> {
+  if (await sshHasToolkit(host)) return true;
+
+  warn(
+    `open-agent is not installed on '${host}' (no ~/.local/bin/ropen).`,
+  );
+  const choice = await fzfSelectSimple(
+    ["yes", "no"],
+    {
+      prompt: "Deploy open-agent to this host? ",
+      header: `Deploy the r* client toolkit to ${host}?`,
+      height: "20%",
+    },
+  );
+  if (choice !== "yes") {
+    info("Skipping deploy — continuing without the remote toolkit.");
+    return false;
+  }
+
+  info(`Deploying open-agent to ${host}...`);
+  const code = await deps.exec("open-agent", ["setup-remote", host]);
+  if (code !== 0) {
+    error(`Deploy to ${host} failed (exit ${code}).`);
+  }
+
+  // Identity: the daemon keys mounts by the SSH Host alias, so the remote
+  // must know the name the local Mac uses for it.
+  await sshWriteIdentity(host, host);
+
+  // Hook: register sessions with the daemon on the next SSH login.
+  const hook = await sshProbeHook(host);
+  if (hook.rcPath && !hook.alreadySourced) {
+    await sshAppendHook(host, hook.rcPath);
+    info(
+      `Hook added to ${hook.rcPath} on ${host} — reconnect SSH to activate.`,
+    );
+  } else if (hook.rcPath) {
+    info(`Hook already sourced in ${hook.rcPath} on ${host}.`);
+  } else {
+    warn(
+      `Could not detect a zsh/bash rc file on ${host} — source ` +
+        `~/.local/share/open-agent/open-agent-hook.sh manually.`,
+    );
+  }
+
+  success(`open-agent deployed to ${host}.`);
+  return true;
 }
 
 // --- SSH helpers ---
@@ -254,13 +358,91 @@ const SSH_DISCOVERY_OPTS = [
   "ControlPath=none",
 ];
 
-async function sshTestDir(host: string, path: string): Promise<boolean> {
+async function sshTestPath(host: string, path: string): Promise<boolean> {
   const result = await deps.run("ssh", [
     ...SSH_DISCOVERY_OPTS,
     host,
     `test -d ${shellQuote(path)}`,
   ], { timeout: SSH_TIMEOUT_MS });
   return result.success;
+}
+
+async function sshTestDir(host: string, path: string): Promise<boolean> {
+  return sshTestPath(host, path);
+}
+
+/** True when the remote has the open-agent client toolkit installed. */
+async function sshHasToolkit(host: string): Promise<boolean> {
+  const result = await deps.run("ssh", [
+    ...SSH_DISCOVERY_OPTS,
+    host,
+    "test -x ~/.local/bin/ropen",
+  ], { timeout: SSH_TIMEOUT_MS });
+  return result.success;
+}
+
+/**
+ * Write the open-agent identity file on a remote. The value must match the
+ * SSH Host alias the local Mac uses for this machine — the daemon hands it
+ * straight to sshfs as an SSH destination.
+ */
+async function sshWriteIdentity(host: string, identity: string): Promise<void> {
+  const result = await deps.run("ssh", [
+    ...SSH_DISCOVERY_OPTS,
+    host,
+    `mkdir -p ~/.config/open-agent && printf '%s' ${
+      shellQuote(identity)
+    } > ~/.config/open-agent/identity`,
+  ], { timeout: SSH_TIMEOUT_MS });
+  if (!result.success) {
+    throw new Error(`Could not write identity file on ${host}`);
+  }
+}
+
+/**
+ * Probe the remote's login shell rc file for the open-agent hook. Returns
+ * the rc path when the hook is already sourced, otherwise the rc path to
+ * append to (or null when the shell is unknown).
+ */
+async function sshProbeHook(host: string): Promise<{
+  rcPath: string | null;
+  alreadySourced: boolean;
+}> {
+  const result = await deps.run("ssh", [
+    ...SSH_DISCOVERY_OPTS,
+    host,
+    'case "$SHELL" in */zsh) echo zsh;; */bash) echo bash;; *) echo other;; esac',
+  ], { timeout: SSH_TIMEOUT_MS });
+  const shell = result.stdout.trim();
+  const rcPath = shell === "zsh"
+    ? "~/.zshrc"
+    : shell === "bash"
+    ? "~/.bashrc"
+    : null;
+  if (!rcPath) return { rcPath: null, alreadySourced: false };
+
+  const probe = await deps.run("ssh", [
+    ...SSH_DISCOVERY_OPTS,
+    host,
+    `grep -q 'open-agent-hook.sh' ${rcPath} 2>/dev/null && echo yes || echo no`,
+  ], { timeout: SSH_TIMEOUT_MS });
+  return { rcPath, alreadySourced: probe.stdout.trim() === "yes" };
+}
+
+/**
+ * Append the hook source line to a remote rc file. Idempotent by
+ * construction — callers only invoke this after sshProbeHook reports the
+ * hook is missing.
+ */
+async function sshAppendHook(host: string, rcPath: string): Promise<void> {
+  const result = await deps.run("ssh", [
+    ...SSH_DISCOVERY_OPTS,
+    host,
+    `printf '\\n# open-agent shell hook\\nsource ~/.local/share/open-agent/open-agent-hook.sh\\n' >> ${rcPath}`,
+  ], { timeout: SSH_TIMEOUT_MS });
+  if (!result.success) {
+    throw new Error(`Could not append hook to ${rcPath} on ${host}`);
+  }
 }
 
 async function sshListDirs(host: string, dir: string): Promise<string[]> {
@@ -497,6 +679,22 @@ async function getProjectSelection(
   opts: Opts,
 ): Promise<ProjectMatch> {
   if (opts.projectName) {
+    // Absolute paths (host:/abs/path or host:~/path) bypass config and
+    // discovery entirely — they name a specific directory on a pinned host.
+    if (opts.hostFilter && isAbsoluteProjectPath(opts.projectName)) {
+      const host = opts.hostFilter;
+      await ensureRemoteToolkit(host);
+      // Expand `~/` here so every downstream consumer (ssh for tmux/code,
+      // the daemon for finder) receives an absolute path — none of them
+      // expand tilde themselves.
+      let path = opts.projectName;
+      if (path.startsWith("~/")) {
+        const home = await sshGetHome(host);
+        path = `${home}/${path.slice(2)}`;
+      }
+      info(`Using path: ${path} on ${host}`);
+      return { host, path };
+    }
     if (opts.hostFilter) {
       const match = await resolveProjectOnHost(
         hosts,
@@ -533,7 +731,7 @@ async function cmdList(
   isJson: boolean,
   query: string,
 ): Promise<void> {
-  const hosts = loadHosts(opts.hostFilter);
+  const hosts = await loadHosts(opts.hostFilter);
   info("Discovering projects...");
   const projects = await discoverProjects(hosts);
 
@@ -587,7 +785,7 @@ async function cmdList(
 }
 
 async function cmdTmux(opts: Opts): Promise<void> {
-  const hosts = loadHosts(opts.hostFilter);
+  const hosts = await loadHosts(opts.hostFilter);
   const { host, path } = await getProjectSelection(hosts, opts);
   const sessionName = basename(path);
   success(`Opening tmux session '${sessionName}' at ${path} on ${host}...`);
@@ -599,14 +797,14 @@ async function cmdTmux(opts: Opts): Promise<void> {
 }
 
 async function cmdCode(opts: Opts): Promise<void> {
-  const hosts = loadHosts(opts.hostFilter);
+  const hosts = await loadHosts(opts.hostFilter);
   const { host, path } = await getProjectSelection(hosts, opts);
   success(`Opening ${path} in VS Code on ${host}...`);
   deps.exit(await deps.exec("code", ["--remote", `ssh-remote+${host}`, path]));
 }
 
 async function cmdFinder(opts: Opts): Promise<void> {
-  const hosts = loadHosts(opts.hostFilter);
+  const hosts = await loadHosts(opts.hostFilter);
   const { host, path } = await getProjectSelection(hosts, opts);
 
   info("Resolving remote home directory...");
@@ -628,7 +826,7 @@ async function cmdFinder(opts: Opts): Promise<void> {
 }
 
 async function cmdDefault(opts: Opts): Promise<void> {
-  const hosts = loadHosts(opts.hostFilter);
+  const hosts = await loadHosts(opts.hostFilter);
   const { host, path } = await getProjectSelection(hosts, opts);
   const projectDisplay = basename(path);
 
@@ -679,8 +877,8 @@ async function cmdDefault(opts: Opts): Promise<void> {
   }
 }
 
-function cmdSetup(opts: Opts): void {
-  const hosts = loadHosts(opts.hostFilter);
+async function cmdSetup(opts: Opts): Promise<void> {
+  const hosts = await loadHosts(opts.hostFilter);
   const seen = new Set<string>();
 
   for (const entry of hosts) {
@@ -720,6 +918,7 @@ async function cmdOpen(arg: string): Promise<void> {
   const host = arg.substring(0, pipeIdx);
   const path = arg.substring(pipeIdx + 1);
   if (!host || !path) error("Invalid argument format. Expected 'host|path'");
+  await ensureRemoteToolkit(host);
   deps.exit(await deps.exec("code", ["--remote", `ssh-remote+${host}`, path]));
 }
 
@@ -776,8 +975,13 @@ Commands:
     to disambiguate duplicate names across hosts. HOST: alone pins the host
     and picks the project interactively. Conflicts with -h are an error.
 
+    Hosts need not be configured: HOST:PROJECT probes the remote for a
+    conventional project root (~/src, ~/code, ~/projects, ~/dev), and
+    HOST:/abs/path (or HOST:~/path) opens a specific directory directly.
+    If open-agent is not installed on the remote, rproj offers to deploy it.
+
 Options:
-    -h, --host HOST   Filter to a specific host alias
+    -h, --host HOST   Filter to a specific host alias (may be unconfigured)
     -p NAME           Project name (skip interactive selection)
     --json            Output as Alfred-compatible JSON (list command only)
     -q QUERY          Filter projects by query (list command with --json)
@@ -840,7 +1044,7 @@ export async function main(argv: string[], depsArg: CliDeps): Promise<void> {
       await cmdDefault(command.opts);
       break;
     case "setup":
-      cmdSetup(command.opts);
+      await cmdSetup(command.opts);
       break;
     case "open":
       await cmdOpen(command.arg);

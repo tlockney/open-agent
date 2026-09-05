@@ -58,6 +58,15 @@ export function splitHostQualifier(
   return { host: raw.slice(0, idx), name: raw.slice(idx + 1) };
 }
 
+/**
+ * True when a project token is an absolute path (`/x` or `~/x`) rather than
+ * a bare project name. Absolute paths bypass config and discovery entirely —
+ * they name a specific directory on a pinned host.
+ */
+export function isAbsoluteProjectPath(name: string): boolean {
+  return name.startsWith("/") || name.startsWith("~/");
+}
+
 // --- Terminal restore ---
 
 /**

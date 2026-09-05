@@ -5,6 +5,7 @@ import {
 } from "jsr:@std/assert@1";
 import {
   buildFzfEntries,
+  isAbsoluteProjectPath,
   parseArgs,
   type ProjectEntry,
   shellQuote,
@@ -45,6 +46,24 @@ Deno.test("splitHostQualifier: empty string is a bare (empty) name", () => {
 
 Deno.test("splitHostQualifier: leading colon (empty host) throws", () => {
   assertThrows(() => splitHostQualifier(":personal"), Error, "empty host");
+});
+
+// --- isAbsoluteProjectPath ---
+
+Deno.test("isAbsoluteProjectPath: absolute paths are absolute", () => {
+  assertEquals(isAbsoluteProjectPath("/src/foo"), true);
+  assertEquals(isAbsoluteProjectPath("/"), true);
+});
+
+Deno.test("isAbsoluteProjectPath: tilde paths are absolute", () => {
+  assertEquals(isAbsoluteProjectPath("~/src/foo"), true);
+  assertEquals(isAbsoluteProjectPath("~"), false); // bare ~ is not a path
+});
+
+Deno.test("isAbsoluteProjectPath: bare names are not absolute", () => {
+  assertEquals(isAbsoluteProjectPath("personal"), false);
+  assertEquals(isAbsoluteProjectPath("sub:dir"), false);
+  assertEquals(isAbsoluteProjectPath(""), false);
 });
 
 // --- shellQuote ---

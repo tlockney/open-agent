@@ -233,10 +233,14 @@ rtmux m4mini:                 # pin the host, pick the project interactively
 ```
 
 The host part is matched strictly against the text before the first
-colon; an unknown host (or one that conflicts with an explicit `-h`)
-is an error. The prefix is a local-side, cross-host selector — it has
-no effect inside a remote session (where `rcode` already targets the
-one host you're connected to).
+colon. Hosts do not need to be configured: an unknown host is probed
+for a conventional project root (`~/src`, `~/code`, `~/projects`,
+`~/dev`) and used directly, and `HOST:/abs/path` (or `HOST:~/path`)
+opens a specific directory with no config at all. If open-agent is not
+installed on the remote, `rproj` offers to deploy it (`setup-remote`
+plus identity + shell hook wiring). The prefix is a local-side,
+cross-host selector — it has no effect inside a remote session (where
+`rcode` already targets the one host you're connected to).
 
 ## Configuration
 
