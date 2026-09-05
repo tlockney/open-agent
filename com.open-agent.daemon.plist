@@ -37,6 +37,11 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <!-- DENO_DIR must be explicit: without it, Deno's module-graph
+             subprocess spawn hangs under launchd on some machines (observed
+             on m4mini — the daemon never reached "listening"). -->
+        <key>DENO_DIR</key>
+        <string>/Users/YOURUSER/.cache/deno</string>
         <key>HOME</key>
         <string>/Users/YOURUSER</string>
         <key>PATH</key>
