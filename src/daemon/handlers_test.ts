@@ -831,3 +831,90 @@ Deno.test("handlePing: returns pong and version without touching deps", () => {
   // as a "is the daemon hung?" probe.
   assertEquals(calls.length, 0);
 });
+
+// --- idle unmount wiring ---
+//
+// open/push/pull hold the mount while they run and, when no shell session
+// holds it, leave it with a pending (idle) unmount afterwards. Without this a
+// mount from a Rex terminal — which never registers a session — stayed up
+// forever.
+
+Deno.test("handleOpen: a sessionless mount is left pending unmount", async () => {
+  const { deps } = createFakeDeps();
+  await handleOpen(
+    {
+      action: "open",
+      host: "h1",
+      remoteHome: "/home/user",
+      path: "/home/user/file.txt",
+    },
+    deps,
+  );
+  assertEquals(
+    deps.mountManager.getMount("h1")?.unmountTimer !== undefined,
+    true,
+  );
+});
+
+Deno.test("handleOpen: a mount a session holds is not scheduled", async () => {
+  const { deps } = createFakeDeps();
+  await handleConnect(
+    {
+      action: "connect",
+      host: "h1",
+      remoteHome: "/home/user",
+      sessionId: "s1",
+    },
+    deps,
+  );
+  await handleOpen(
+    {
+      action: "open",
+      host: "h1",
+      remoteHome: "/home/user",
+      path: "/home/user/file.txt",
+    },
+    deps,
+  );
+  assertEquals(deps.mountManager.getMount("h1")?.unmountTimer, undefined);
+});
+
+Deno.test("handlePull: a sessionless mount is left pending unmount", async () => {
+  const { deps } = createFakeDeps();
+  await handlePull(
+    {
+      action: "pull",
+      host: "h1",
+      remoteHome: "/home/user",
+      localPath: "/Users/me/Downloads/a.png",
+      remoteDest: "/home/user/",
+    },
+    deps,
+  );
+  assertEquals(
+    deps.mountManager.getMount("h1")?.unmountTimer !== undefined,
+    true,
+  );
+});
+
+// The hold is released even when the request fails, or the mount could
+// never be reclaimed after an error.
+Deno.test("handlePush: the mount is released when the request fails", async () => {
+  const { deps } = createFakeDeps({ statThrowsFor: ["missing.txt"] });
+  const res = JSON.parse(
+    await handlePush(
+      {
+        action: "push",
+        host: "h1",
+        remoteHome: "/home/user",
+        path: "/home/user/missing.txt",
+      },
+      deps,
+    ),
+  );
+  assertEquals(res.ok, false);
+  assertEquals(
+    deps.mountManager.getMount("h1")?.unmountTimer !== undefined,
+    true,
+  );
+});

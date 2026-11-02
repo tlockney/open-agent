@@ -26,10 +26,11 @@ listener to a fixed path/port on the remote, so the remote commands can reach
 the daemon as if it were local.
 
 Every `r*` command is **dual-mode**: each one checks `isRemoteSession()` first
-and runs the native local equivalent when it is *not* inside SSH. `rcopy` on the
-local Mac pipes straight to `pbcopy`; `rop` execs the real `op`. Only inside an
-SSH session does a command reach for the daemon. This is why the same binaries
-can be installed everywhere.
+and runs the native local equivalent when it is *not* remote. `rcopy` on the
+local Mac pipes straight to `pbcopy`; `rop` execs the real `op`. Only in a
+remote shell — an SSH session, or a Rex terminal on a machine configured with
+a direct daemon address (see §4.2) — does a command reach for the daemon. This
+is why the same binaries can be installed everywhere.
 
 ```mermaid
 flowchart LR
@@ -150,14 +151,21 @@ cannot forward Unix sockets — see `connectivity-plan.md`.
 The TCP bind is **retried three times at 500 ms** and is allowed to fail: the
 port may legitimately be held by an sshd `RemoteForward` when this machine is
 *also* an open-agent remote. A failed TCP bind must not take down the Unix
-listener, so it only logs and continues.
+listener, so it only logs and continues. A failed **non-loopback** bind
+(`OPEN_AGENT_BIND`) is different: the usual cause is a Tailscale interface that
+is not up yet when launchd starts the daemon at login, so it keeps retrying
+every 30 s in the background and starts serving once the bind succeeds.
 
 By default the TCP listener binds `127.0.0.1` and trusts the SSH tunnel, so a
 loopback connection needs no credential. Setting `OPEN_AGENT_BIND` to a
 Tailscale IP or `0.0.0.0` accepts direct connections, and those are
 **authenticated**: the daemon generates a shared token at first startup
 (`~/.config/open-agent/auth-token`, mode 0600) and requires it on any
-non-loopback connection. Loopback (the SSH-tunnel path) is still trusted and
+non-loopback connection. Under launchd the bind address is set at install time
+with `install.sh --bind=ADDR`, which writes both `OPEN_AGENT_BIND` and the
+matching Deno `--allow-net` grant into the plist and remembers the choice in
+`~/.config/open-agent/bind` for later installs and updates. Loopback (the
+SSH-tunnel path) is still trusted and
 needs no token. See `src/daemon/auth.ts`.
 
 ### 3.2 The accept loop (`accept.ts`)
@@ -291,7 +299,9 @@ stateDiagram-v2
     Stale --> Mounted: forceUnmount → remount
     Mounted --> PendingUnmount: last disconnect (30s grace)
     PendingUnmount --> Mounted: new connect (cancel timer)
-    PendingUnmount --> Unmounted: timer fires, no sessions
+    Mounted --> PendingUnmount: last request done, no sessions (15 min idle)
+    PendingUnmount --> Mounted: request (cancel timer)
+    PendingUnmount --> Unmounted: timer fires, no sessions or requests
     Mounted --> Unmounted: reset / SIGINT / SIGTERM
 ```
 
@@ -310,6 +320,17 @@ Key implementation details:
 - **Session accounting** — `connect` adds a `sessionId` to a `Set`; `disconnect`
   removes it. When the set empties, `scheduleUnmount()` arms a 30 s timer
   (`UNMOUNT_GRACE_MS`); any new `connect` cancels it.
+- **Idle unmount for request-driven mounts** — the hook only runs inside SSH,
+  so a mount brought up by a request from anywhere else (a Rex terminal, or
+  `rproj finder` on the daemon host) has no session to release it. `open`,
+  `push`, and `pull` therefore hold the mount for their duration
+  (`requestStarted`/`requestFinished`); when the last one finishes and no
+  session holds the mount, a 15-minute timer (`DEFAULT_IDLE_UNMOUNT_MS`)
+  starts, and any later request cancels it. At fire time the timer re-checks
+  that the mount has no sessions or in-flight requests and is still the same
+  mount, so a timer left over from before a `reset` cannot unmount its
+  replacement. Mounts recovered by `restore()` get no timer until a request
+  uses them.
 - **Path translation** — `translatePath()` `normalize()`s the remote path and
   requires it to be under the remote `$HOME`; it then rewrites it onto the mount
   point. Paths outside `$HOME` are rejected, because only `$HOME` is mounted.
@@ -371,8 +392,20 @@ error on older Deno, and remotes run mixed versions. (The daemon's own plist
 
 Shared by every `r*` client. Central pieces:
 
-- **Session detection (`isRemoteSession`)** — true when `SSH_CONNECTION`,
-  `SSH_TTY`, or `SSH_CLIENT` is set. Every client branches on this first.
+- **Session detection (`isRemoteSession` → `resolveRemoteRole`)** — every
+  client branches on this first. In priority order: `OPEN_AGENT_REMOTE=1`/`0`
+  forces the answer; an SSH session (`SSH_CONNECTION`, `SSH_TTY`, or
+  `SSH_CLIENT`) is remote; a Rex terminal (`REX_SESSION`) is remote when a
+  non-loopback daemon address is configured. Rex shells are children of the Rex
+  server, not of sshd, so they carry no SSH variables even when the person is
+  on another machine; without the Rex rule `rcopy` there wrote to the remote's
+  own clipboard and exited 0. A Rex shell alone is not enough, because the same
+  server hosts shells for someone at that machine's keyboard.
+- **Direct daemon address** — `~/.config/open-agent/daemon-address` holds
+  `host[:port]` (IPv6 in brackets) and feeds the TCP target when
+  `OPEN_AGENT_TCP_HOST`/`PORT` are unset; it also opts into the TCP fallback.
+  With a non-loopback target configured, a missing tunnel socket is expected
+  and `requireSock()` no longer warns about it.
 - **Identity resolution (`resolveHost`)** — how the remote names itself to the
   daemon, used as the mount key: `OPEN_AGENT_HOST`, else
   `~/.config/open-agent/identity`, else the `UNRESOLVED_HOST` sentinel. Blank
@@ -407,7 +440,8 @@ the fallback stays on.
 
 Sourced from the remote shell profile. It:
 
-- Only activates when `$SSH_CONNECTION` is set.
+- Only activates when `$SSH_CONNECTION` is set. Rex terminals therefore never
+  register a session; their mounts are released by the idle unmount instead.
 - Computes a host identity and a unique `sessionId` (`$$-<epoch>`).
 - Sends `connect` on shell start and traps `EXIT HUP TERM` to send `disconnect`.
   This is what drives the daemon's mount/unmount lifecycle.
@@ -639,13 +673,16 @@ remount.
 | `OPEN_AGENT_HOST` | *(unset → unresolved)* | remote | Host identity; must match the local Mac's SSH `Host` alias |
 | `OPEN_AGENT_SOCK` | `/tmp/open-agent.sock` remote, `~/.local/share/…` local | both | Socket path |
 | `OPEN_AGENT_TCP_HOST` / `OPEN_AGENT_TCP_PORT` | `127.0.0.1` / `19876` | both | TCP target; **setting either also opts a remote into the TCP fallback** |
-| `OPEN_AGENT_BIND` | `127.0.0.1` | local (daemon) | Address the daemon's TCP listener binds; set to a Tailscale IP or `0.0.0.0` to accept direct (authenticated) connections |
+| `OPEN_AGENT_REMOTE` | *(unset)* | both | `1`/`0` forces the remote/local decision; overrides SSH and Rex detection |
+| `OPEN_AGENT_BIND` | `127.0.0.1` | local (daemon) | Address the daemon's TCP listener binds; set to a Tailscale IP or `0.0.0.0` to accept direct (authenticated) connections. Under launchd, set with `install.sh --bind=ADDR` |
 | `OPEN_AGENT_TOKEN` | *(unset → reads `~/.config/open-agent/auth-token`)* | both | Shared token for non-loopback connections |
 | `OPEN_AGENT_DIR` | `~/.local/share/open-agent` | both | Where `oa-wrapper.sh` finds `src/` |
 
 | Daemon constant | Default | Meaning |
 |-----------------|---------|---------|
-| `UNMOUNT_GRACE_MS` | `30000` | Idle grace before unmount |
+| `UNMOUNT_GRACE_MS` | `30000` | Grace before unmount after the last session disconnects |
+| `DEFAULT_IDLE_UNMOUNT_MS` | `900000` | Idle time before unmounting a mount no session holds |
+| `TCP_LATE_BIND_RETRY_MS` | `30000` | Retry interval for a failed non-loopback TCP bind |
 | `ABANDON_AFTER_MS` | `30000` | Continuous accept failure before abandoning a listener |
 | `BACKOFF_AFTER_MS` / `BACKOFF_MS` | `100` / `50` | When retries start pausing, and by how much |
 | `MAX_MESSAGE_BYTES` | `8 MiB` | Largest single request or response |

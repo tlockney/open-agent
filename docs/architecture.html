@@ -858,7 +858,7 @@
       </tbody>
     </table>
 
-    <p>Every <code>r*</code> command is <strong>dual-mode</strong>: each one checks <code>isRemoteSession()</code> first and runs the native local equivalent when it is <em>not</em> inside SSH. <code>rcopy</code> on the local Mac pipes straight to <code>pbcopy</code>; <code>rop</code> execs the real <code>op</code>. Only inside an SSH session does a command reach for the daemon — which is why the same binaries can be installed everywhere.</p>
+    <p>Every <code>r*</code> command is <strong>dual-mode</strong>: each one checks <code>isRemoteSession()</code> first and runs the native local equivalent when it is <em>not</em> remote. <code>rcopy</code> on the local Mac pipes straight to <code>pbcopy</code>; <code>rop</code> execs the real <code>op</code>. Only in a remote shell — an SSH session, or a Rex terminal on a machine configured with a direct daemon address (see §4.2) — does a command reach for the daemon, which is why the same binaries can be installed everywhere.</p>
 
     <figure>
       <pre class="mermaid">flowchart LR
@@ -958,7 +958,7 @@ docs/
     </ol>
     <p>Both feed the same <code>acceptConnections()</code> → <code>handleConnection()</code> path. The TCP listener exists precisely because some SSH implementations (Tailscale SSH, iPad apps) cannot forward Unix sockets — see <a href="./connectivity-plan.md">connectivity-plan.md</a>.</p>
 
-    <p>The TCP bind is <strong>retried three times at 500 ms</strong> and is allowed to fail: the port may legitimately be held by an sshd <code>RemoteForward</code> when this machine is <em>also</em> an open-agent remote. A failed TCP bind must not take down the Unix listener, so it only logs and continues.</p>
+    <p>The TCP bind is <strong>retried three times at 500 ms</strong> and is allowed to fail: the port may legitimately be held by an sshd <code>RemoteForward</code> when this machine is <em>also</em> an open-agent remote. A failed TCP bind must not take down the Unix listener, so it only logs and continues. A failed <strong>non-loopback</strong> bind (<code>OPEN_AGENT_BIND</code>) is different: the usual cause is a Tailscale interface that is not up yet when launchd starts the daemon at login, so it keeps retrying every 30s in the background and starts serving once the bind succeeds. Under launchd the bind address is set with <code>install.sh --bind=ADDR</code>, which writes both <code>OPEN_AGENT_BIND</code> and the matching Deno <code>--allow-net</code> grant into the plist and remembers the choice in <code>~/.config/open-agent/bind</code>.</p>
 
     <div class="note caveat">
       <span class="note-label">Caveat · No authentication</span>
@@ -1051,7 +1051,9 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
     Stale --> Mounted: forceUnmount → remount
     Mounted --> PendingUnmount: last disconnect (30s grace)
     PendingUnmount --> Mounted: new connect (cancel timer)
-    PendingUnmount --> Unmounted: timer fires, no sessions
+    Mounted --> PendingUnmount: last request done, no sessions (15 min idle)
+    PendingUnmount --> Mounted: request (cancel timer)
+    PendingUnmount --> Unmounted: timer fires, no sessions or requests
     Mounted --> Unmounted: reset / SIGINT / SIGTERM</pre>
       <figcaption>Mount lifecycle: one <code>MountState</code> per host, refcounted by session, with a 30s idle grace and stale-mount recovery.</figcaption>
     </figure>
@@ -1062,6 +1064,7 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
       <li><strong>Health check</strong> — <code>isMountResponsive()</code> first checks the <code>mount(8)</code> table (parsed by <code>parseMountPoints()</code>, which compares whole paths — a substring search once let host <code>work</code> match the line belonging to <code>work2</code>), then runs <code>stat</code> with a 3s <code>AbortSignal</code> timeout. A hung FUSE mount would otherwise block indefinitely.</li>
       <li><strong>Stale recovery</strong> — if the mount exists but is unresponsive, <code>forceUnmount()</code> (plain <code>umount</code>, then macOS <code>diskutil unmount force</code>) and remount.</li>
       <li><strong>Session accounting</strong> — <code>connect</code> adds a <code>sessionId</code> to a <code>Set</code>; <code>disconnect</code> removes it. When the set empties, <code>scheduleUnmount()</code> arms a 30s timer (<code>UNMOUNT_GRACE_MS</code>); any new <code>connect</code> cancels it.</li>
+      <li><strong>Idle unmount for request-driven mounts</strong> — the hook only runs inside SSH, so a mount brought up by a request from anywhere else (a Rex terminal, or <code>rproj finder</code> on the daemon host) has no session to release it. <code>open</code>, <code>push</code>, and <code>pull</code> hold the mount for their duration (<code>requestStarted</code>/<code>requestFinished</code>); when the last one finishes and no session holds the mount, a 15-minute timer (<code>DEFAULT_IDLE_UNMOUNT_MS</code>) starts, and any later request cancels it. At fire time the timer re-checks that the mount has no sessions or in-flight requests and is still the same mount, so a timer left from before a <code>reset</code> cannot unmount its replacement.</li>
       <li><strong>Path translation</strong> — <code>translatePath()</code> <code>normalize()</code>s the remote path and requires it to be under the remote <code>$HOME</code>; it then rewrites it onto the mount point. Paths outside <code>$HOME</code> are rejected (only <code>$HOME</code> is mounted).</li>
       <li><strong>Graceful shutdown</strong> — <code>SIGINT</code>/<code>SIGTERM</code> close both listeners, remove the socket, and unmount every host before exiting.</li>
     </ul>
@@ -1095,7 +1098,8 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
     <h3>4.2 · Transport library (<code>src/lib/oa.ts</code>)</h3>
     <p>Shared by every <code>r*</code> client. Central pieces:</p>
     <ul>
-      <li><strong>Session detection (<code>isRemoteSession</code>)</strong> — true when <code>SSH_CONNECTION</code>, <code>SSH_TTY</code>, or <code>SSH_CLIENT</code> is set. Every client branches on this first.</li>
+      <li><strong>Session detection (<code>isRemoteSession</code> → <code>resolveRemoteRole</code>)</strong> — every client branches on this first. In priority order: <code>OPEN_AGENT_REMOTE=1</code>/<code>0</code> forces the answer; an SSH session (<code>SSH_CONNECTION</code>, <code>SSH_TTY</code>, or <code>SSH_CLIENT</code>) is remote; a Rex terminal (<code>REX_SESSION</code>) is remote when a non-loopback daemon address is configured. Rex shells are children of the Rex server, not of sshd, so they carry no SSH variables even when the person is on another machine. A Rex shell alone is not enough, because the same server hosts shells for someone at that machine's keyboard.</li>
+      <li><strong>Direct daemon address</strong> — <code>~/.config/open-agent/daemon-address</code> holds <code>host[:port]</code> (IPv6 in brackets) and feeds the TCP target when <code>OPEN_AGENT_TCP_HOST</code>/<code>PORT</code> are unset; it also opts into the TCP fallback. With a non-loopback target configured, a missing tunnel socket is expected and <code>requireSock()</code> no longer warns about it.</li>
       <li><strong>Identity resolution (<code>resolveHost</code>)</strong> — how the remote names itself to the daemon, used as the mount key: <code>OPEN_AGENT_HOST</code>, else <code>~/.config/open-agent/identity</code>, else the <code>UNRESOLVED_HOST</code> sentinel. Blank and whitespace-only values count as absent. There is deliberately <strong>no <code>hostname -s</code> fallback</strong>: the value must match an SSH <code>Host</code> alias on the local Mac, since the daemon feeds it straight to <code>sshfs</code>, and a remote's own hostname usually is not that alias — guessing mounts the wrong host instead of failing. <code>requireHost()</code> turns the sentinel into an actionable error, and <code>open-agent-hook.sh</code> resolves identity identically and declines to register a session when it comes back unresolved.</li>
       <li><strong>Socket path (<code>defaultSockPath</code>)</strong> — differs by side. On a remote the daemon is reachable only through the tunnel, which binds <code>/tmp/open-agent.sock</code>. Locally the daemon binds its own socket under <code>~/.local/share</code> and never listens on <code>/tmp</code>, so a <code>/tmp</code> socket on the local Mac is at best a leftover from an inbound forward.</li>
       <li><strong><code>send(message, timeoutSec)</code></strong> — try the Unix socket (2s connect timeout), then fall back to TCP. Each transport's failure is reported separately; collapsing them into one generic message used to hide real causes (a dead daemon, a missing Deno permission) behind a guess about the tunnel.</li>
@@ -1109,7 +1113,7 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
     <h3>4.3 · The shell hook (<code>open-agent-hook.sh</code>)</h3>
     <p>Sourced from the remote shell profile. It:</p>
     <ul>
-      <li>Only activates when <code>$SSH_CONNECTION</code> is set (i.e., a real SSH session).</li>
+      <li>Only activates when <code>$SSH_CONNECTION</code> is set (i.e., a real SSH session). Rex terminals therefore never register a session; their mounts are released by the idle unmount instead.</li>
       <li>Computes a host identity and a unique <code>sessionId</code> (<code>$$-&lt;epoch&gt;</code>).</li>
       <li>Sends <code>connect</code> on shell start and traps <code>EXIT HUP TERM</code> to send <code>disconnect</code>. This is what drives the daemon's mount/unmount lifecycle.</li>
       <li>Aliases <code>open</code> → <code>ropen</code> and defines an <code>oa-status</code> function.</li>
@@ -1277,7 +1281,9 @@ server → {"ok":true,"localPath":"/Users/me/.remote-mounts/work/…"}</pre>
     <table>
       <thead><tr><th>Daemon constant</th><th>Default</th><th>Meaning</th></tr></thead>
       <tbody>
-        <tr><td><code>UNMOUNT_GRACE_MS</code></td><td><code>30000</code></td><td>Idle grace before unmount</td></tr>
+        <tr><td><code>UNMOUNT_GRACE_MS</code></td><td><code>30000</code></td><td>Grace before unmount after the last session disconnects</td></tr>
+        <tr><td><code>DEFAULT_IDLE_UNMOUNT_MS</code></td><td><code>900000</code></td><td>Idle time before unmounting a mount no session holds</td></tr>
+        <tr><td><code>TCP_LATE_BIND_RETRY_MS</code></td><td><code>30000</code></td><td>Retry interval for a failed non-loopback TCP bind</td></tr>
         <tr><td><code>ABANDON_AFTER_MS</code></td><td><code>30000</code></td><td>Continuous accept failure before abandoning a listener</td></tr>
         <tr><td><code>BACKOFF_AFTER_MS</code> / <code>BACKOFF_MS</code></td><td><code>100</code> / <code>50</code></td><td>When retries start pausing, and by how much</td></tr>
         <tr><td><code>MAX_MESSAGE_BYTES</code></td><td><code>8 MiB</code></td><td>Largest single request or response</td></tr>

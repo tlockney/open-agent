@@ -1,5 +1,10 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { checkAuth, generateToken, isLoopbackAddress } from "./auth.ts";
+import {
+  checkAuth,
+  describeAddr,
+  generateToken,
+  isLoopbackAddress,
+} from "./auth.ts";
 
 Deno.test("generateToken: returns a 64-char lowercase hex string", () => {
   const token = generateToken();
@@ -78,4 +83,22 @@ Deno.test("checkAuth: non-loopback with missing or wrong token fails", () => {
   };
   assertEquals(checkAuth(remote, undefined, TOKEN) !== null, true);
   assertEquals(checkAuth(remote, "wrong", TOKEN) !== null, true);
+});
+
+// --- describeAddr ---
+
+Deno.test("describeAddr: renders TCP peers as host:port", () => {
+  assertEquals(
+    describeAddr({ transport: "tcp", hostname: "100.64.0.9", port: 51234 }),
+    "100.64.0.9:51234",
+  );
+});
+
+Deno.test("describeAddr: renders unix peers and absent addresses", () => {
+  assertEquals(
+    describeAddr({ transport: "unix", path: "/tmp/s.sock" }),
+    "unix:/tmp/s.sock",
+  );
+  assertEquals(describeAddr({ transport: "unix", path: "" }), "unix:(unnamed)");
+  assertEquals(describeAddr(undefined), "unknown");
 });
