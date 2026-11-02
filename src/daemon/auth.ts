@@ -66,3 +66,20 @@ export function checkAuth(
   }
   return null;
 }
+
+/**
+ * Render a peer address for the log. Interpolating a `Deno.Addr` directly
+ * throws ("Cannot convert object to primitive value") on current Deno, which
+ * turned every rejected direct connection into a generic connection error
+ * and hid the auth_failed response from the client.
+ */
+export function describeAddr(addr: Deno.Addr | undefined): string {
+  if (!addr) return "unknown";
+  if (addr.transport === "tcp" || addr.transport === "udp") {
+    return `${addr.hostname}:${addr.port}`;
+  }
+  if (addr.transport === "unix" || addr.transport === "unixpacket") {
+    return `unix:${addr.path || "(unnamed)"}`;
+  }
+  return addr.transport;
+}

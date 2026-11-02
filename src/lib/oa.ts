@@ -28,13 +28,78 @@ export function defaultSockPath(home: string, remote: boolean): string {
     : `${home}/.local/share/open-agent/open-agent.sock`;
 }
 
-export const SOCK = Deno.env.get("OPEN_AGENT_SOCK") ??
-  defaultSockPath(HOME, isRemoteSession());
-export const TCP_HOST = Deno.env.get("OPEN_AGENT_TCP_HOST") ?? "127.0.0.1";
+/** Port the daemon's TCP listener uses unless told otherwise. */
+export const DEFAULT_TCP_PORT = 19876;
+
+/** A daemon address read from the `daemon-address` config file. */
+export interface DaemonAddress {
+  host: string;
+  port?: number;
+}
+
+/**
+ * Parse the `daemon-address` file: `host` or `host:port`, with an IPv6
+ * literal written in brackets (`[fd7a::1]:19876`). Blank lines and `#`
+ * comments are ignored; the first remaining line wins. Returns undefined for
+ * an empty or malformed file so a typo falls back to the defaults instead of
+ * sending requests somewhere unintended.
+ */
+export function parseDaemonAddress(
+  contents: string | undefined,
+): DaemonAddress | undefined {
+  const line = contents?.split("\n")
+    .map((l) => l.trim())
+    .find((l) => l && !l.startsWith("#"));
+  if (!line) return undefined;
+
+  const match = line.match(/^\[([^\]]+)\](?::(\d+))?$/) ??
+    line.match(/^([^:\s\[\]]+)(?::(\d+))?$/);
+  if (!match) return undefined;
+
+  const host = match[1];
+  if (match[2] === undefined) return { host };
+  const port = parseInt(match[2], 10);
+  if (port < 1 || port > 65535) return undefined;
+  return { host, port };
+}
+
+/** Where the daemon-address file lives. */
+export function daemonAddressPath(home: string): string {
+  return `${home}/.config/open-agent/daemon-address`;
+}
+
+function readDaemonAddress(): DaemonAddress | undefined {
+  try {
+    return parseDaemonAddress(Deno.readTextFileSync(daemonAddressPath(HOME)));
+  } catch {
+    return undefined; // no file
+  }
+}
+
+/**
+ * A daemon this machine was told to reach directly, from the
+ * `daemon-address` file. Env vars still take precedence over it below.
+ */
+const DAEMON_ADDRESS = readDaemonAddress();
+
+export const TCP_HOST = Deno.env.get("OPEN_AGENT_TCP_HOST") ??
+  DAEMON_ADDRESS?.host ?? "127.0.0.1";
 export const TCP_PORT = parseInt(
-  Deno.env.get("OPEN_AGENT_TCP_PORT") ?? "19876",
+  Deno.env.get("OPEN_AGENT_TCP_PORT") ??
+    String(DAEMON_ADDRESS?.port ?? DEFAULT_TCP_PORT),
   10,
 );
+
+/**
+ * Whether a daemon on another machine is configured for direct connection —
+ * a non-loopback TCP host from OPEN_AGENT_TCP_HOST or the daemon-address
+ * file. This is what lets a shell with no SSH tunnel (a Rex terminal, say)
+ * still reach the personal Mac.
+ */
+export const DIRECT_DAEMON = !isLoopbackHost(TCP_HOST);
+
+export const SOCK = Deno.env.get("OPEN_AGENT_SOCK") ??
+  defaultSockPath(HOME, isRemoteSession());
 
 /**
  * Whether the TCP fallback is safe to try.
@@ -56,7 +121,8 @@ export function shouldTryTcp(remote: boolean, tcpConfigured: boolean): boolean {
 }
 
 const TCP_CONFIGURED = Boolean(
-  Deno.env.get("OPEN_AGENT_TCP_HOST") ?? Deno.env.get("OPEN_AGENT_TCP_PORT"),
+  Deno.env.get("OPEN_AGENT_TCP_HOST") ?? Deno.env.get("OPEN_AGENT_TCP_PORT") ??
+    DAEMON_ADDRESS,
 );
 /**
  * Sentinel for "this machine has no configured identity".
@@ -117,17 +183,58 @@ export function requireHost(host: string = HOST): string {
   return host;
 }
 
+/** The environment inputs that decide whether this shell is remote. */
+export interface RemoteRoleInputs {
+  /** OPEN_AGENT_REMOTE — an explicit override, when set. */
+  override?: string;
+  /** Any of SSH_CONNECTION / SSH_TTY / SSH_CLIENT is set. */
+  ssh: boolean;
+  /** REX_SESSION is set: the shell was started by a Rex server. */
+  rex: boolean;
+  /** A non-loopback daemon address is configured (see DIRECT_DAEMON). */
+  directDaemon: boolean;
+}
+
 /**
- * True when running inside an SSH session — i.e. on the remote machine,
- * where the r* commands should reach back to the local agent. False means
- * we're sitting at the local Mac and should run the native equivalent.
+ * Pure remote/local decision, in priority order:
+ *
+ * 1. OPEN_AGENT_REMOTE=1/0 (also true/false, yes/no) — explicit, always wins.
+ * 2. An SSH session — the original signal, and still the common case.
+ * 3. A Rex terminal with a direct daemon configured. Shells started by a Rex
+ *    server are children of that server, not of sshd, so they carry no SSH
+ *    variables even when the person typing is on another machine. Without
+ *    this rule every r* command in such a shell ran its local fallback —
+ *    `rcopy` wrote to the remote's own clipboard and exited 0. A Rex shell
+ *    alone is not enough: the same server also runs shells for someone at
+ *    this machine's own keyboard. A configured daemon on another machine is
+ *    the statement that this machine's r* commands belong to that daemon.
+ *
+ * An unrecognised override value is ignored rather than guessed at.
+ */
+export function resolveRemoteRole(inputs: RemoteRoleInputs): boolean {
+  const o = inputs.override?.trim().toLowerCase();
+  if (o === "1" || o === "true" || o === "yes") return true;
+  if (o === "0" || o === "false" || o === "no") return false;
+  if (inputs.ssh) return true;
+  return inputs.rex && inputs.directDaemon;
+}
+
+/**
+ * True when the r* commands should reach back to the daemon on the personal
+ * Mac; false means we are at that Mac and should run the native equivalent.
+ * See resolveRemoteRole for the rules.
  */
 export function isRemoteSession(): boolean {
-  return Boolean(
-    Deno.env.get("SSH_CONNECTION") ||
-      Deno.env.get("SSH_TTY") ||
-      Deno.env.get("SSH_CLIENT"),
-  );
+  return resolveRemoteRole({
+    override: Deno.env.get("OPEN_AGENT_REMOTE"),
+    ssh: Boolean(
+      Deno.env.get("SSH_CONNECTION") ||
+        Deno.env.get("SSH_TTY") ||
+        Deno.env.get("SSH_CLIENT"),
+    ),
+    rex: Boolean(Deno.env.get("REX_SESSION")),
+    directDaemon: DIRECT_DAEMON,
+  });
 }
 
 export const SCRIPT_NAME =
@@ -177,7 +284,10 @@ function callerName(): string {
 }
 
 export function requireSock(): void {
-  if (!existsSync(SOCK)) {
+  // With a direct daemon configured, TCP is the intended route and a missing
+  // tunnel socket is normal (a Rex shell has none), so it is not worth a
+  // warning on every command. Failures still list it if TCP fails too.
+  if (!existsSync(SOCK) && !DIRECT_DAEMON) {
     // Socket missing — TCP may still work, so just warn
     const next = shouldTryTcp(isRemoteSession(), TCP_CONFIGURED)
       ? `will try TCP ${TCP_HOST}:${TCP_PORT}`
@@ -289,7 +399,8 @@ export async function send(
         failures.map((f) => `     - ${f}`).join("\n")
       }\n     - TCP ${TCP_HOST}:${TCP_PORT}: skipped — on a remote this would be` +
         ` this machine's own daemon, not the one across the tunnel.\n` +
-        `       (set OPEN_AGENT_TCP_HOST/PORT if you really did forward it)`,
+        `       (set OPEN_AGENT_TCP_HOST/PORT if you really did forward it,\n` +
+        `       or write the daemon's address to ${daemonAddressPath(HOME)})`,
     );
   }
 

@@ -6,7 +6,9 @@ import {
   getStringField,
   isLoopbackHost,
   isRemoteSession,
+  parseDaemonAddress,
   resolveHostIdentity,
+  resolveRemoteRole,
   send,
   shouldTryTcp,
   UNRESOLVED_HOST,
@@ -129,9 +131,17 @@ Deno.test("formatErrorMessage: returns 'unknown error' for unrecognized shapes",
 
 // --- isRemoteSession ---
 
-const SSH_VARS = ["SSH_CONNECTION", "SSH_TTY", "SSH_CLIENT"] as const;
+const SSH_VARS = [
+  "SSH_CONNECTION",
+  "SSH_TTY",
+  "SSH_CLIENT",
+  // Not SSH, but they also feed the remote decision, so a test run from a
+  // Rex terminal or with an override set must not leak them in either.
+  "OPEN_AGENT_REMOTE",
+  "REX_SESSION",
+] as const;
 
-// Save the three SSH vars, clear them, run body, then restore. Keeps the
+// Save the role-deciding vars, clear them, run body, then restore. Keeps the
 // real test environment (which may itself be an SSH session) from leaking
 // into these assertions.
 function withSshEnv(
@@ -228,4 +238,115 @@ Deno.test("isLoopbackHost: loopback names are local", () => {
 Deno.test("isLoopbackHost: non-loopback hosts are not local", () => {
   assertEquals(isLoopbackHost("10.0.0.5"), false);
   assertEquals(isLoopbackHost("macbook.tailnet.ts.net"), false);
+});
+
+// --- resolveRemoteRole ---
+
+const role = (
+  over: Partial<Parameters<typeof resolveRemoteRole>[0]>,
+): boolean =>
+  resolveRemoteRole({ ssh: false, rex: false, directDaemon: false, ...over });
+
+Deno.test("resolveRemoteRole: SSH session is remote", () => {
+  assertEquals(role({ ssh: true }), true);
+});
+
+Deno.test("resolveRemoteRole: plain local shell is local", () => {
+  assertEquals(role({}), false);
+});
+
+// A Rex server's shells are not children of sshd, so they carry no SSH vars
+// even when the person is on another machine. With a direct daemon
+// configured they must count as remote, or rcopy writes to this machine's
+// clipboard and exits 0.
+Deno.test("resolveRemoteRole: Rex shell with a direct daemon is remote", () => {
+  assertEquals(role({ rex: true, directDaemon: true }), true);
+});
+
+// The same Rex server also hosts shells for someone at this machine's own
+// keyboard; without a daemon elsewhere there is nothing to reach back to.
+Deno.test("resolveRemoteRole: Rex shell without a direct daemon is local", () => {
+  assertEquals(role({ rex: true }), false);
+});
+
+// A daemon address alone (no SSH, no Rex) keeps the old behaviour: a shell
+// at this machine's own keyboard still runs the native commands.
+Deno.test("resolveRemoteRole: direct daemon outside Rex is local", () => {
+  assertEquals(role({ directDaemon: true }), false);
+});
+
+Deno.test("resolveRemoteRole: OPEN_AGENT_REMOTE=1 forces remote", () => {
+  for (const v of ["1", "true", "YES", " yes "]) {
+    assertEquals(role({ override: v }), true, v);
+  }
+});
+
+Deno.test("resolveRemoteRole: OPEN_AGENT_REMOTE=0 forces local, even over SSH", () => {
+  for (const v of ["0", "false", "No"]) {
+    assertEquals(role({ override: v, ssh: true }), false, v);
+  }
+});
+
+Deno.test("resolveRemoteRole: unrecognised override is ignored", () => {
+  assertEquals(role({ override: "maybe", ssh: true }), true);
+  assertEquals(role({ override: "", rex: true }), false);
+});
+
+Deno.test("isRemoteSession: OPEN_AGENT_REMOTE=1 without SSH is remote", () => {
+  withSshEnv(
+    { OPEN_AGENT_REMOTE: "1" },
+    () => assertEquals(isRemoteSession(), true),
+  );
+});
+
+Deno.test("isRemoteSession: OPEN_AGENT_REMOTE=0 overrides SSH", () => {
+  withSshEnv(
+    { OPEN_AGENT_REMOTE: "0", SSH_CONNECTION: "1.2.3.4 22 5.6.7.8 22" },
+    () => assertEquals(isRemoteSession(), false),
+  );
+});
+
+// --- parseDaemonAddress ---
+
+Deno.test("parseDaemonAddress: bare host", () => {
+  assertEquals(parseDaemonAddress("macbook.tailnet.ts.net\n"), {
+    host: "macbook.tailnet.ts.net",
+  });
+});
+
+Deno.test("parseDaemonAddress: host and port", () => {
+  assertEquals(parseDaemonAddress("100.64.0.7:20000"), {
+    host: "100.64.0.7",
+    port: 20000,
+  });
+});
+
+Deno.test("parseDaemonAddress: bracketed IPv6 with and without port", () => {
+  assertEquals(parseDaemonAddress("[fd7a:115c::7]:19876"), {
+    host: "fd7a:115c::7",
+    port: 19876,
+  });
+  assertEquals(parseDaemonAddress("[fd7a:115c::7]"), { host: "fd7a:115c::7" });
+});
+
+Deno.test("parseDaemonAddress: skips comments and blank lines", () => {
+  assertEquals(
+    parseDaemonAddress("# personal Mac over Tailscale\n\n  macbook  \n"),
+    { host: "macbook" },
+  );
+});
+
+Deno.test("parseDaemonAddress: empty or missing is undefined", () => {
+  assertEquals(parseDaemonAddress(undefined), undefined);
+  assertEquals(parseDaemonAddress(""), undefined);
+  assertEquals(parseDaemonAddress("# only a comment\n"), undefined);
+});
+
+// A typo must fall back to the defaults, not send requests somewhere odd.
+Deno.test("parseDaemonAddress: malformed input is undefined", () => {
+  assertEquals(parseDaemonAddress("fd7a:115c::7"), undefined); // unbracketed v6
+  assertEquals(parseDaemonAddress("host:port"), undefined);
+  assertEquals(parseDaemonAddress("host:0"), undefined);
+  assertEquals(parseDaemonAddress("host:70000"), undefined);
+  assertEquals(parseDaemonAddress("two words"), undefined);
 });

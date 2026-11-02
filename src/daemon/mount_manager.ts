@@ -77,9 +77,21 @@ export function parseMountPoints(mountOutput: string): string[] {
   return points;
 }
 
+/**
+ * How long a mount no session holds may sit unused before it is unmounted.
+ *
+ * Shell sessions register through the hook, which only runs inside SSH. A
+ * mount brought up by a request from anywhere else — a Rex terminal, which
+ * has no SSH session, or `rproj finder` on the daemon host — had nothing to
+ * ever take it down again.
+ */
+export const DEFAULT_IDLE_UNMOUNT_MS = 15 * 60_000;
+
 export class MountManager {
   private mounts = new Map<string, MountState>();
   private mountLocks = new Map<string, Promise<MountState>>();
+  /** Requests currently using each host's mount. */
+  private inFlight = new Map<string, number>();
 
   constructor(
     private deps: MountDeps,
@@ -87,6 +99,7 @@ export class MountManager {
     private unmountGraceMs: number,
     /** Where the mount table is mirrored so it survives a daemon restart. */
     private statePath: string,
+    private idleUnmountMs: number = DEFAULT_IDLE_UNMOUNT_MS,
   ) {}
 
   /**
@@ -215,6 +228,38 @@ export class MountManager {
 
   /** Schedule unmount after grace period if no sessions remain. */
   scheduleUnmount(host: string): void {
+    this.scheduleUnmountAfter(host, this.unmountGraceMs);
+  }
+
+  /**
+   * Mark a request as using this host's mount. Pair with requestFinished in
+   * a `finally`. While any request is in flight the mount is never
+   * unmounted, so a long `rpush` cannot lose its mount to an idle timer
+   * started by an earlier request.
+   */
+  requestStarted(host: string): void {
+    this.inFlight.set(host, (this.inFlight.get(host) ?? 0) + 1);
+  }
+
+  /**
+   * A request is done with this host's mount. When it was the last one and
+   * no shell session holds the mount, start the idle countdown. A request
+   * arriving before it expires cancels it (doMount clears the timer).
+   */
+  requestFinished(host: string): void {
+    const remaining = (this.inFlight.get(host) ?? 1) - 1;
+    if (remaining > 0) {
+      this.inFlight.set(host, remaining);
+      return;
+    }
+    this.inFlight.delete(host);
+
+    const state = this.mounts.get(host);
+    if (!state || state.sessions.size > 0) return;
+    this.scheduleUnmountAfter(host, this.idleUnmountMs);
+  }
+
+  private scheduleUnmountAfter(host: string, delayMs: number): void {
     const state = this.mounts.get(host);
     if (!state) return;
 
@@ -222,14 +267,21 @@ export class MountManager {
       this.deps.clearTimeout(state.unmountTimer);
     }
 
-    this.deps.log(
-      `Scheduling unmount for ${host} in ${this.unmountGraceMs / 1000}s`,
-    );
+    this.deps.log(`Scheduling unmount for ${host} in ${delayMs / 1000}s`);
     state.unmountTimer = this.deps.setTimeout(() => {
-      if (state.sessions.size === 0) {
+      state.unmountTimer = undefined;
+      // Re-check at fire time: a session may have connected, or a request
+      // started, since the timer was set. Either one now owns the mount, and
+      // the last of them to finish reschedules.
+      // And the mount must still be this one: after a reset and remount the
+      // host maps to a new state that this timer knows nothing about.
+      if (
+        this.mounts.get(host) === state &&
+        state.sessions.size === 0 && !this.inFlight.has(host)
+      ) {
         this.unmountHost(host);
       }
-    }, this.unmountGraceMs);
+    }, delayMs);
   }
 
   /** Unmount a specific host and remove its state. */
@@ -237,6 +289,10 @@ export class MountManager {
     const state = this.mounts.get(host);
     if (!state) return;
 
+    if (state.unmountTimer !== undefined) {
+      this.deps.clearTimeout(state.unmountTimer);
+      state.unmountTimer = undefined;
+    }
     this.deps.log(`Unmounting ${host} (${state.mountPoint})`);
     await this.forceUnmount(state.mountPoint);
     this.mounts.delete(host);

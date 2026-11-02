@@ -35,11 +35,14 @@ function createFakeDeps(opts?: {
   calls: CommandCall[];
   logs: string[];
   timers: Map<number, () => void>;
+  /** Delay each pending timer was scheduled with, by timer id. */
+  delays: Map<number, number>;
   files: Map<string, string>;
 } {
   const calls: CommandCall[] = [];
   const logs: string[] = [];
   const timers = new Map<number, () => void>();
+  const delays = new Map<number, number>();
   const files = new Map<string, string>(opts?.files ?? []);
   let nextTimerId = 1;
 
@@ -101,17 +104,19 @@ function createFakeDeps(opts?: {
     log(msg) {
       logs.push(msg);
     },
-    setTimeout(fn, _ms) {
+    setTimeout(fn, ms) {
       const id = nextTimerId++;
       timers.set(id, fn);
+      delays.set(id, ms);
       return id;
     },
     clearTimeout(id) {
       timers.delete(id);
+      delays.delete(id);
     },
   };
 
-  return { deps, calls, logs, timers, files };
+  return { deps, calls, logs, timers, delays, files };
 }
 
 Deno.test("ensureMount: creates a new mount via sshfs", async () => {
@@ -630,4 +635,129 @@ Deno.test("restore: entries with the wrong field types are rejected", async () =
   await mgr.restore();
 
   assertEquals(mgr.getAllMounts().size, 0);
+});
+
+// --- idle unmount (request-driven mounts) ---
+//
+// A mount brought up by a request rather than a hook-registered session —
+// from a Rex terminal, which has no SSH session, or `rproj finder` — used to
+// stay mounted forever. Once the last request finishes and no session holds
+// it, it now unmounts after the idle delay.
+
+const GRACE_MS = 30_000;
+const IDLE_MS = 900_000;
+
+function idleManager(opts?: Parameters<typeof createFakeDeps>[0]) {
+  const fake = createFakeDeps({
+    sshfsSuccess: true,
+    umountSuccess: true,
+    ...opts,
+  });
+  const mgr = new MountManager(
+    fake.deps,
+    "/mnt",
+    GRACE_MS,
+    STATE_PATH,
+    IDLE_MS,
+  );
+  return { ...fake, mgr };
+}
+
+const settle = () => new Promise((r) => setTimeout(r, 10));
+
+Deno.test("requestFinished: a sessionless mount gets the idle delay", async () => {
+  const { mgr, delays } = idleManager();
+  mgr.requestStarted("h1");
+  await mgr.ensureMount("h1", "/home/user");
+  mgr.requestFinished("h1");
+  assertEquals([...delays.values()], [IDLE_MS]);
+});
+
+Deno.test("requestFinished: a mount a session holds is left alone", async () => {
+  const { mgr, timers } = idleManager();
+  mgr.requestStarted("h1");
+  const state = await mgr.ensureMount("h1", "/home/user");
+  state.sessions.add("s1");
+  mgr.requestFinished("h1");
+  assertEquals(timers.size, 0);
+});
+
+Deno.test("requestFinished: the idle timer unmounts when it fires", async () => {
+  const { mgr, timers, calls } = idleManager();
+  mgr.requestStarted("h1");
+  await mgr.ensureMount("h1", "/home/user");
+  mgr.requestFinished("h1");
+
+  [...timers.values()][0]();
+  await settle();
+
+  assertEquals(mgr.getMount("h1"), undefined);
+  assertEquals(calls.some((c) => c.cmd === "umount"), true);
+});
+
+Deno.test("requestFinished: only the last overlapping request starts the timer", async () => {
+  const { mgr, timers } = idleManager();
+  mgr.requestStarted("h1");
+  mgr.requestStarted("h1");
+  await mgr.ensureMount("h1", "/home/user");
+
+  mgr.requestFinished("h1");
+  assertEquals(timers.size, 0);
+  mgr.requestFinished("h1");
+  assertEquals(timers.size, 1);
+});
+
+// A long rpush must not lose its mount to a timer an earlier request set.
+Deno.test("idle timer: does not unmount while a request is in flight", async () => {
+  const { mgr, timers } = idleManager();
+  mgr.requestStarted("h1");
+  await mgr.ensureMount("h1", "/home/user");
+  mgr.requestFinished("h1");
+  const fire = [...timers.values()][0];
+
+  mgr.requestStarted("h1"); // a second request, still running
+  fire();
+  await settle();
+
+  assertEquals(mgr.getMount("h1") !== undefined, true);
+});
+
+Deno.test("idle timer: does not unmount once a session has connected", async () => {
+  const { mgr, timers } = idleManager();
+  mgr.requestStarted("h1");
+  const state = await mgr.ensureMount("h1", "/home/user");
+  mgr.requestFinished("h1");
+  const fire = [...timers.values()][0];
+
+  state.sessions.add("s1");
+  fire();
+  await settle();
+
+  assertEquals(mgr.getMount("h1"), state);
+});
+
+// After `ra reset` and a fresh mount, the host maps to a new state. A timer
+// left over from the old one must not tear the new one down.
+Deno.test("idle timer: a stale timer does not unmount a newer mount", async () => {
+  const { mgr, timers } = idleManager();
+  mgr.requestStarted("h1");
+  await mgr.ensureMount("h1", "/home/user");
+  mgr.requestFinished("h1");
+  const staleFire = [...timers.values()][0];
+
+  await mgr.unmountHost("h1");
+  assertEquals(timers.size, 0); // unmountHost cancels its timer
+  const fresh = await mgr.ensureMount("h1", "/home/user");
+  fresh.sessions.add("s1");
+
+  staleFire();
+  await settle();
+  assertEquals(mgr.getMount("h1"), fresh);
+});
+
+Deno.test("scheduleUnmount: still uses the short grace period", async () => {
+  const { mgr, delays } = idleManager();
+  await mgr.ensureMount("h1", "/home/user");
+  mgr.scheduleUnmount("h1");
+  assertEquals([...delays.values()], [GRACE_MS]);
 });

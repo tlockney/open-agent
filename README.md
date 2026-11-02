@@ -267,10 +267,11 @@ Legacy config at `~/.config/rproj/hosts` is auto-detected with a warning.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OPEN_AGENT_HOST` | *(unset — see below)* | SSH config Host alias for this remote machine |
+| `OPEN_AGENT_REMOTE` | *(unset)* | `1` or `0` forces whether the `r*` commands treat this shell as remote. Overrides SSH and Rex detection |
 | `OPEN_AGENT_SOCK` | `/tmp/open-agent.sock` on a remote, `~/.local/share/open-agent/open-agent.sock` locally | Path to the daemon socket |
 | `OPEN_AGENT_TCP_HOST` | `127.0.0.1` | TCP fallback host. Setting it also opts a remote *into* the TCP fallback (see below) |
 | `OPEN_AGENT_TCP_PORT` | `19876` | TCP fallback port. Same opt-in effect |
-| `OPEN_AGENT_BIND` | `127.0.0.1` | *(daemon)* Address the TCP listener binds. Set to a Tailscale IP or `0.0.0.0` to accept direct connections, which then require the shared token |
+| `OPEN_AGENT_BIND` | `127.0.0.1` | *(daemon)* Address the TCP listener binds. Set to a Tailscale IP or `0.0.0.0` to accept direct connections, which then require the shared token. Under launchd, set it with `install.sh --bind=ADDR` |
 | `OPEN_AGENT_TOKEN` | *(unset → reads `~/.config/open-agent/auth-token`)* | Shared token for non-loopback connections |
 
 **Authentication.** The daemon binds loopback and trusts the SSH tunnel, so the
@@ -286,8 +287,9 @@ the personal Mac — it is whatever daemon runs on *that* machine. On a remote
 that runs a daemon of its own, falling back to it would serve the request on
 the wrong host: `ropen` opens the file there, `rcopy` writes to that clipboard,
 and the command exits 0 as though it worked. So on a remote the fallback is
-skipped unless you set `OPEN_AGENT_TCP_HOST` or `OPEN_AGENT_TCP_PORT`, which
-declares that you really did forward a TCP port to the daemon.
+skipped unless you set `OPEN_AGENT_TCP_HOST` or `OPEN_AGENT_TCP_PORT` (or
+write `~/.config/open-agent/daemon-address`, see below), which declares that
+you really did forward a TCP port to the daemon or can reach it directly.
 
 Host identity is resolved in order: `OPEN_AGENT_HOST` env var, then
 `~/.config/open-agent/identity`. There is deliberately **no `hostname -s`
@@ -298,12 +300,51 @@ neither source set, the `r*` commands exit with instructions and the shell hook
 declines to register the session rather than registering it under a name that
 cannot work.
 
-**Agent constants (in `src/daemon/main.ts`):**
+**Agent constants (in `src/daemon/main.ts` and `mount_manager.ts`):**
 
 | Constant | Default | Description |
 |----------|---------|-------------|
 | `UNMOUNT_GRACE_MS` | `30000` | Delay before unmounting after last session exits |
+| `DEFAULT_IDLE_UNMOUNT_MS` | `900000` | Delay before unmounting a mount no session holds (one brought up by a request from a Rex terminal or `rproj finder`) |
 | SSHFS `cache_timeout` | `120` | Metadata cache in seconds (trade freshness for speed) |
+
+### Shells without an SSH session (Rex)
+
+The `r*` commands decide they are on a remote by looking for SSH environment
+variables, and the shell hook registers only SSH sessions. Terminals started by
+a [Rex](https://www.superlogical.com/rex/docs/) server are children of that
+server, not of sshd, so they have neither, and a Rex client reaching the server
+over Tailscale has no SSH `RemoteForward` either. To use the `r*` commands in
+those terminals:
+
+1. On the personal Mac, bind the daemon beyond loopback (re-run the installer;
+   the choice is remembered for later installs and `open-agent update`):
+
+   ```bash
+   ./install.sh --local --bind=100.64.0.7    # its Tailscale IP, or 0.0.0.0
+   ```
+
+2. On each remote, name that daemon and copy its token:
+
+   ```bash
+   echo macbook.tailnet.ts.net > ~/.config/open-agent/daemon-address   # host[:port]
+   # copy ~/.config/open-agent/auth-token from the personal Mac to the same path
+   chmod 600 ~/.config/open-agent/auth-token
+   ```
+
+A Rex terminal (`REX_SESSION` set) on a machine with a non-loopback
+`daemon-address` counts as remote, and its commands connect straight to the
+daemon. A Rex terminal without one, such as on the personal Mac itself, stays
+local. `OPEN_AGENT_REMOTE=1` or `0` overrides the decision either way.
+
+The rule is per machine, not per viewer: a machine with a `daemon-address`
+sends every Rex terminal's requests to that daemon, including terminals you
+open from that machine's own keyboard. If you also work locally on such a
+machine through Rex, export `OPEN_AGENT_REMOTE=0` in those shells.
+
+Rex terminals never register a session, so their SSHFS mounts are not tied to a
+shell. A mount no session holds is unmounted after 15 minutes without a
+request, and the next request mounts it again.
 
 ## Development
 
@@ -341,5 +382,9 @@ deno run --allow-read --allow-write --allow-run --allow-env \
 **Remote `r*` command prompts `Deno requests net access to "unix:/tmp/open-agent.sock"`:** The remote is running a pre-Deno-2.9 permission grant that only covers the TCP fallback. Redeploy the current wrapper and scripts with `open-agent setup-remote <host>` (or `all`) from the local Mac, then reconnect.
 
 **sshfs not found by agent:** The launchd plist needs `/opt/homebrew/bin` in its PATH environment variable. Re-run `install.sh` or edit the plist manually.
+
+**`r*` commands in a Rex terminal act on the remote itself (`rcopy` fills the remote's clipboard):** The shell has no SSH variables and no `daemon-address`, so the commands treat it as local. Configure the direct daemon as in [Shells without an SSH session](#shells-without-an-ssh-session-rex), or set `OPEN_AGENT_REMOTE=1`.
+
+**Direct connections fail after a reboot:** With `--bind` set to a Tailscale IP, the daemon may start before Tailscale is up. It retries the bind every 30 seconds and logs `open-agent listening on <addr>:19876` once it succeeds (`ra logs`).
 
 **Stale SSHFS mount:** `umount -f ~/.remote-mounts/workmbp` or `diskutil unmount force ~/.remote-mounts/workmbp`.

@@ -14,7 +14,12 @@ import { createRealDeps, MountManager } from "./mount_manager.ts";
 import { closeLog, initLog, log } from "./logger.ts";
 import { handleMessage, type HandlerDeps } from "./handlers.ts";
 import { acceptConnections } from "./accept.ts";
-import { checkAuth, loadOrCreateToken } from "./auth.ts";
+import {
+  checkAuth,
+  describeAddr,
+  isLoopbackAddress,
+  loadOrCreateToken,
+} from "./auth.ts";
 import { VERSION } from "../lib/version.ts";
 
 const HOME = Deno.env.get("HOME");
@@ -31,6 +36,11 @@ const TCP_HOST = Deno.env.get("OPEN_AGENT_BIND") ?? "127.0.0.1";
 const TCP_PORT = 19876;
 const TCP_BIND_ATTEMPTS = 3;
 const TCP_BIND_RETRY_MS = 500;
+// A non-loopback bind (a Tailscale IP) can fail only because the interface is
+// not up yet — launchd starts the daemon at login, often before Tailscale
+// connects. Such a bind keeps retrying at this interval instead of leaving
+// the daemon unreachable from direct clients until its next restart.
+const TCP_LATE_BIND_RETRY_MS = 30_000;
 const MOUNT_BASE = `${HOME}/.remote-mounts`;
 const LOG_PATH = `${AGENT_DIR}/agent.log`;
 const STATE_PATH = `${AGENT_DIR}/mounts.json`;
@@ -126,7 +136,11 @@ async function handleConnection(
     // SSH-tunnel path) is trusted and needs none.
     const authError = checkAuth(conn.remoteAddr, msg.token, authToken);
     if (authError) {
-      log(`Rejected unauthenticated connection from ${conn.remoteAddr}`);
+      log(
+        `Rejected unauthenticated connection from ${
+          describeAddr(conn.remoteAddr)
+        }`,
+      );
       const err = JSON.stringify({
         ok: false,
         error: { code: "auth_failed", message: authError },
@@ -197,11 +211,47 @@ async function main(): Promise<void> {
   // TCP is a fallback transport; the port may legitimately be held by an
   // sshd RemoteForward when this machine is also an open-agent remote, so
   // a failed bind must not take down the Unix listener.
-  const tcpListener = await listenTcp();
+  let tcpListener = await listenTcp();
   if (tcpListener) log(`open-agent listening on ${TCP_HOST}:${TCP_PORT}`);
 
   // Graceful shutdown
   let shuttingDown = false;
+
+  // A failed loopback bind is expected (see above) and stays failed. A failed
+  // non-loopback bind is retried in the background; once it succeeds it
+  // serves alongside the Unix listener. It is not part of the "every listener
+  // closed" check below — the Unix listener alone decides that.
+  const bindBeyondLoopback = !isLoopbackAddress({
+    transport: "tcp",
+    hostname: TCP_HOST,
+    port: TCP_PORT,
+  });
+  if (!tcpListener && bindBeyondLoopback) {
+    log(
+      `Retrying ${TCP_HOST}:${TCP_PORT} every ${
+        TCP_LATE_BIND_RETRY_MS / 1000
+      }s until it can be bound`,
+    );
+    (async () => {
+      while (!shuttingDown) {
+        await new Promise((r) => setTimeout(r, TCP_LATE_BIND_RETRY_MS));
+        if (shuttingDown) return;
+        try {
+          tcpListener = Deno.listen({ hostname: TCP_HOST, port: TCP_PORT });
+        } catch {
+          continue;
+        }
+        log(`open-agent listening on ${TCP_HOST}:${TCP_PORT}`);
+        await acceptConnections(
+          tcpListener,
+          (conn) => handleConnection(conn, authToken),
+          log,
+        );
+        return;
+      }
+    })();
+  }
+
   const shutdown = async () => {
     shuttingDown = true;
     log("Shutting down...");

@@ -44,6 +44,10 @@
         <string>/Users/YOURUSER/.cache/deno</string>
         <key>HOME</key>
         <string>/Users/YOURUSER</string>
+        <!-- TCP listener address. install.sh sets this and the matching
+             allow-net grant above from the bind option (default loopback). -->
+        <key>OPEN_AGENT_BIND</key>
+        <string>127.0.0.1</string>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>

@@ -112,6 +112,25 @@ async function verifyMountAndPath(
   }
 }
 
+/**
+ * Run a request that uses a host's mount, holding the mount for its
+ * duration. Afterwards, if no shell session holds the mount, its idle
+ * countdown starts — the only thing that unmounts a mount brought up by a
+ * request rather than by a hook-registered session.
+ */
+async function usingMount<T>(
+  deps: HandlerDeps,
+  host: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  deps.mountManager.requestStarted(host);
+  try {
+    return await fn();
+  } finally {
+    deps.mountManager.requestFinished(host);
+  }
+}
+
 // --- Handlers ---
 
 export async function handleConnect(
@@ -143,7 +162,7 @@ export function handleDisconnect(
   return ok();
 }
 
-export async function handleOpen(
+async function openOnMount(
   msg: Extract<Message, { action: "open" }>,
   deps: HandlerDeps,
 ): Promise<string> {
@@ -255,7 +274,7 @@ export function handleOpenUrl(
   });
 }
 
-export async function handlePush(
+async function pushFromMount(
   msg: Extract<Message, { action: "push" }>,
   deps: HandlerDeps,
 ): Promise<string> {
@@ -280,7 +299,7 @@ export async function handlePush(
   return ok({ localPath: destPath });
 }
 
-export async function handlePull(
+async function pullToMount(
   msg: Extract<Message, { action: "pull" }>,
   deps: HandlerDeps,
 ): Promise<string> {
@@ -360,6 +379,30 @@ export async function handleOpResolve(
     return err("internal", `Failed to resolve: ${errors.join("; ")}`);
   }
   return ok({ resolved });
+}
+
+// The mount-using handlers. Each holds the host's mount for its duration so
+// a request-driven mount gets an idle unmount (see usingMount).
+
+export function handleOpen(
+  msg: Extract<Message, { action: "open" }>,
+  deps: HandlerDeps,
+): Promise<string> {
+  return usingMount(deps, msg.host, () => openOnMount(msg, deps));
+}
+
+export function handlePush(
+  msg: Extract<Message, { action: "push" }>,
+  deps: HandlerDeps,
+): Promise<string> {
+  return usingMount(deps, msg.host, () => pushFromMount(msg, deps));
+}
+
+export function handlePull(
+  msg: Extract<Message, { action: "pull" }>,
+  deps: HandlerDeps,
+): Promise<string> {
+  return usingMount(deps, msg.host, () => pullToMount(msg, deps));
 }
 
 /**

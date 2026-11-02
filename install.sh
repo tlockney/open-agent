@@ -12,6 +12,12 @@
 #                  job. Skips the sshfs and terminal-notifier checks, since
 #                  both are only used daemon-side. For a machine that talks
 #                  to a daemon elsewhere over the SSH tunnel.
+#   --bind=ADDR    address the daemon's TCP listener binds (default
+#                  127.0.0.1). Set a Tailscale IP, or 0.0.0.0, to accept
+#                  direct connections from machines with no SSH tunnel (Rex
+#                  terminals, say); those require the shared token. Saved to
+#                  ~/.config/open-agent/bind and reused by later installs and
+#                  `open-agent update`. --bind=127.0.0.1 goes back to loopback.
 
 set -euo pipefail
 
@@ -32,13 +38,16 @@ fail()  { echo -e "${RED}✗${NC} $1"; exit 1; }
 
 LOCAL=0
 WITH_DAEMON=1
+BIND=""
 
 for arg in "$@"; do
     case "$arg" in
         --local)     LOCAL=1 ;;
         --no-daemon) WITH_DAEMON=0 ;;
+        --bind=*)    BIND="${arg#--bind=}"
+                     [[ -n "$BIND" ]] || fail "--bind needs an address, e.g. --bind=100.64.0.7" ;;
         -h|--help)
-            sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) fail "Unknown option: $arg (see --help)" ;;
@@ -97,6 +106,16 @@ if [[ $LOCAL -eq 0 ]]; then
     cd $REPO_NAME && ./install.sh --local --no-daemon"
         fi
         PASSTHRU+=(--no-daemon)
+    fi
+    if [[ -n "$BIND" ]]; then
+        # Same reasoning as --no-daemon: an older release would reject the
+        # flag, or worse, predate it and bind loopback without saying so.
+        if ! grep -q -- '--bind=' "$EXTRACTED/install.sh"; then
+            fail "$LATEST_TAG does not support --bind yet. Install from a clone instead:
+    git clone https://github.com/$REPO_OWNER/$REPO_NAME.git
+    cd $REPO_NAME && ./install.sh --local --bind=$BIND"
+        fi
+        PASSTHRU+=("--bind=$BIND")
     fi
 
     exec bash "$EXTRACTED/install.sh" "${PASSTHRU[@]}"
@@ -258,14 +277,41 @@ mkdir -p "$LAUNCH_AGENTS"
 
 DENO_PATH=$(command -v deno)
 
+# Resolve the TCP bind address: --bind wins and is remembered; otherwise the
+# remembered value, so `open-agent update` (which re-runs this script with no
+# flags) does not quietly drop a non-loopback bind.
+BIND_FILE="$OA_CONFIG_DIR/bind"
+if [[ -n "$BIND" ]]; then
+    mkdir -p "$OA_CONFIG_DIR"
+    printf '%s\n' "$BIND" > "$BIND_FILE"
+elif [[ -f "$BIND_FILE" ]]; then
+    BIND=$(tr -d '[:space:]' < "$BIND_FILE")
+fi
+BIND="${BIND:-127.0.0.1}"
+# It is spliced into the plist by sed, so allow address characters only.
+[[ "$BIND" =~ ^[0-9A-Za-z.:-]+$ ]] || fail "Invalid bind address: $BIND"
+
+# Deno's --allow-net grant has to name the address being listened on; the
+# template grants loopback. An IPv6 literal is bracketed in the grant.
+if [[ "$BIND" == *:* ]]; then
+    NET_GRANT="[$BIND]:19876"
+else
+    NET_GRANT="$BIND:19876"
+fi
+
 # Generate plist with correct paths
 sed \
     -e "s|/Users/YOURUSER/.deno/bin/deno|${DENO_PATH}|g" \
     -e "s|/Users/YOURUSER|${HOME}|g" \
+    -e "s|,127.0.0.1:19876<|,${NET_GRANT}<|" \
+    -e "s|<string>127.0.0.1</string>|<string>${BIND}</string>|" \
     "$SCRIPT_DIR/com.open-agent.daemon.plist" \
     > "$LAUNCH_AGENTS/${PLIST_NAME}.plist"
 
 info "Installed launchd plist to $LAUNCH_AGENTS/${PLIST_NAME}.plist"
+if [[ "$BIND" != "127.0.0.1" ]]; then
+    info "TCP listener binds $BIND:19876 — direct connections need the token in $OA_CONFIG_DIR/auth-token"
+fi
 
 # Unload if already running, then load
 launchctl bootout "gui/$(id -u)/$PLIST_NAME" 2>/dev/null || true
